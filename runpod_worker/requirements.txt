@@ -1,0 +1,12 @@
+accelerate>=1.0,<2
+diffusers>=0.37.1,<0.39
+huggingface_hub>=0.34,<1
+numpy>=1.26,<3
+opencv-python-headless>=4.10,<5
+peft>=0.17,<0.20
+pillow>=10,<12
+protobuf>=4,<7
+runpod>=1.7,<2
+safetensors>=0.4,<0.8
+sentencepiece>=0.2,<0.3
+transformers>=4.56,<5

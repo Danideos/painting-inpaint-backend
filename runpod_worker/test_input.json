@@ -1,0 +1,13 @@
+{
+  "input": {
+    "prompt": "DURER_RESTO",
+    "image_base64": "<base64 PNG or JPEG>",
+    "mask_base64": "<base64 PNG or JPEG; white = inpaint, black = preserve>",
+    "partial_noise": 1.0,
+    "guidance_scale": 30.0,
+    "num_inference_steps": 28,
+    "seed": 123,
+    "lora_scale": 1.0,
+    "output_format": "png"
+  }
+}

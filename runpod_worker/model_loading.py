@@ -424,8 +424,6 @@ def set_lora_scale(
     if not adapter_name:
         return {"mode": "not_loaded", "effective_scale": None}
 
-    if scale > 0 and hasattr(pipe, "enable_lora"):
-        pipe.enable_lora()
     if hasattr(pipe, "set_adapters"):
         try:
             pipe.set_adapters([adapter_name], adapter_weights=[scale])

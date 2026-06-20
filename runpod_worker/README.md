@@ -19,6 +19,26 @@ explicitly allowing `runpod_worker/loras/*.safetensors` so a LoRA can be baked i
 
 ## LoRA
 
+The preferred serverless setup downloads the LoRA from a Hugging Face repository during
+the worker's lazy pipeline initialization:
+
+```text
+LORA_REPO_ID=danideos/durer-flux-fill-lora
+LORA_FILENAME=pytorch_lora_weights.safetensors
+LORA_REVISION=main
+LORA_REQUIRED=1
+```
+
+`LORA_REVISION` defaults to `main`. `LORA_FILENAME` may include a repository subfolder,
+for example `weights/pytorch_lora_weights.safetensors`. The worker uses `HF_TOKEN` or
+`HUGGINGFACE_HUB_TOKEN` when available and caches the downloaded file under
+`/tmp/painting-inpaint-lora-cache` by default. Set `LORA_CACHE_DIR` to override that
+location.
+
+The pipeline and adapter are loaded only once per warm worker. Each request applies its
+own `lora_scale`; omitted scale defaults to `1.0`, and `0` sets the adapter weight to
+zero. Negative values are rejected.
+
 For smoke tests, LoRA is optional. For production, set:
 
 ```text
@@ -40,6 +60,11 @@ runpod_worker/loras/pytorch_lora_weights.safetensors
 Or set `LORA_PATH` to another mounted/downloaded file path. Never commit the LoRA
 unless you intentionally change the repository policy.
 
+Hugging Face repo configuration takes precedence over `LORA_PATH`. If only one of
+`LORA_REPO_ID` and `LORA_FILENAME` is set, LoRA is treated as unavailable. Optional
+configuration/download/load failures are returned in the response's `lora.error` field;
+with `LORA_REQUIRED=1`, they fail the request clearly.
+
 ## RunPod Endpoint
 
 Recommended first endpoint settings:
@@ -59,6 +84,9 @@ MODEL_ID=black-forest-labs/FLUX.1-Fill-dev
 ALLOW_HF_DOWNLOAD=0
 LORA_REQUIRED=1
 LORA_PATH=/app/runpod_worker/loras/pytorch_lora_weights.safetensors
+LORA_REPO_ID=danideos/durer-flux-fill-lora
+LORA_FILENAME=pytorch_lora_weights.safetensors
+LORA_REVISION=main
 ```
 
 Set `ALLOW_HF_DOWNLOAD=1` only when you explicitly want the worker to download from
@@ -102,6 +130,10 @@ The first milestone returns a JSON object with:
 - `timings`: model loading and inference timings
 
 Object storage upload can be added later.
+
+The `lora` response object includes `loaded`, `required`, `source`, `repo_id`,
+`filename`, `revision`, `local_path`, `adapter_name`, `requested_scale`,
+`effective_scale`, `elapsed_seconds`, and an optional `error` message.
 
 ## Local Checks
 

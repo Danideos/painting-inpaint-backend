@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MODEL_ID = "black-forest-labs/FLUX.1-Fill-dev"
 DEFAULT_LORA_PATH = "/app/runpod_worker/loras/pytorch_lora_weights.safetensors"
+DEFAULT_LORA_CACHE_DIR = "/tmp/painting-inpaint-lora-cache"
 DEFAULT_ADAPTER_NAME = "durer"
 
 
@@ -42,6 +44,21 @@ class LoadedPipeline:
     timings: dict[str, float]
 
 
+@dataclass(frozen=True)
+class LoraConfig:
+    """Resolved local or Hugging Face LoRA configuration."""
+
+    required: bool
+    source: str
+    repo_id: str | None
+    filename: str | None
+    revision: str
+    local_path: Path | None
+    cache_dir: Path
+    adapter_name: str
+    error: str | None = None
+
+
 def env_flag(name: str, *, default: bool = False) -> bool:
     """Return a boolean environment flag."""
 
@@ -49,6 +66,14 @@ def env_flag(name: str, *, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_value(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
 
 
 def _repo_cache_name(model_id: str) -> str:
@@ -184,6 +209,91 @@ def resolve_lora_path(
     return None
 
 
+def resolve_lora_config(
+    *,
+    lora_path: str | Path | None = None,
+    required: bool | None = None,
+) -> LoraConfig:
+    """Resolve remote LoRA settings first, then preserve the local-file fallback."""
+
+    required_value = (
+        env_flag("LORA_REQUIRED", default=False) if required is None else bool(required)
+    )
+    repo_id = _env_value("LORA_REPO_ID")
+    filename = _env_value("LORA_FILENAME")
+    revision = _env_value("LORA_REVISION") or "main"
+    adapter_name = _env_value("LORA_ADAPTER_NAME") or DEFAULT_ADAPTER_NAME
+    cache_dir = Path(_env_value("LORA_CACHE_DIR") or DEFAULT_LORA_CACHE_DIR)
+
+    if repo_id is not None or filename is not None:
+        error = None
+        source = "huggingface_repo"
+        if repo_id is None or filename is None:
+            source = "invalid_remote_config"
+            error = (
+                "LORA_REPO_ID and LORA_FILENAME must both be set to load a Hugging "
+                "Face LoRA."
+            )
+        return LoraConfig(
+            required=required_value,
+            source=source,
+            repo_id=repo_id,
+            filename=filename,
+            revision=revision,
+            local_path=None,
+            cache_dir=cache_dir,
+            adapter_name=adapter_name,
+            error=error,
+        )
+
+    configured_path = Path(lora_path or _env_value("LORA_PATH") or DEFAULT_LORA_PATH)
+    return LoraConfig(
+        required=required_value,
+        source="local_path" if configured_path.exists() else "unavailable",
+        repo_id=None,
+        filename=None,
+        revision=revision,
+        local_path=configured_path,
+        cache_dir=cache_dir,
+        adapter_name=adapter_name,
+    )
+
+
+def download_lora_from_huggingface(
+    config: LoraConfig,
+    *,
+    download_fn: Callable[..., str] | None = None,
+) -> Path:
+    """Download and cache a configured Hugging Face LoRA file."""
+
+    if config.source != "huggingface_repo" or not config.repo_id or not config.filename:
+        raise ValueError("A complete Hugging Face LoRA configuration is required.")
+
+    if download_fn is None:
+        from huggingface_hub import hf_hub_download
+
+        download_fn = hf_hub_download
+
+    config.cache_dir.mkdir(parents=True, exist_ok=True)
+    token = _env_value("HF_TOKEN") or _env_value("HUGGINGFACE_HUB_TOKEN")
+    kwargs: dict[str, Any] = {
+        "repo_id": config.repo_id,
+        "filename": config.filename,
+        "revision": config.revision,
+        "cache_dir": str(config.cache_dir),
+    }
+    if token:
+        kwargs["token"] = token
+
+    local_path = Path(download_fn(**kwargs))
+    if not local_path.exists() or not local_path.is_file():
+        raise FileNotFoundError(
+            "hf_hub_download did not return an existing LoRA file: "
+            f"{local_path}"
+        )
+    return local_path
+
+
 def _resolve_lora_file(path: Path) -> tuple[Path, str]:
     if path.is_file():
         return path.parent, path.name
@@ -198,58 +308,147 @@ def _resolve_lora_file(path: Path) -> tuple[Path, str]:
     raise FileNotFoundError(f"No .safetensors LoRA weights found under {path}.")
 
 
-def load_lora_if_available(pipe: Any, *, lora_path: str | Path | None = None) -> dict[str, Any]:
-    """Load the configured LoRA when present, or return skipped metadata."""
-
-    started = time.perf_counter()
-    resolved = resolve_lora_path(lora_path=lora_path)
-    if resolved is None:
-        return {
-            "loaded": False,
-            "required": env_flag("LORA_REQUIRED", default=False),
-            "path": str(lora_path or os.environ.get("LORA_PATH", DEFAULT_LORA_PATH)),
-            "adapter_name": None,
-            "strength_mode": "not_loaded_optional",
-            "elapsed_seconds": time.perf_counter() - started,
-        }
-    if not hasattr(pipe, "load_lora_weights"):
-        raise RuntimeError(f"{type(pipe).__name__} does not expose load_lora_weights.")
-
-    adapter_name = os.environ.get("LORA_ADAPTER_NAME", DEFAULT_ADAPTER_NAME)
-    parent, weight_name = _resolve_lora_file(resolved)
-    load_result = pipe.load_lora_weights(
-        str(parent),
-        weight_name=weight_name,
-        adapter_name=adapter_name,
-    )
-    strength_mode = set_lora_scale(pipe, adapter_name=adapter_name, lora_scale=1.0)
-    elapsed = time.perf_counter() - started
-    LOGGER.info("LoRA loading finished in %.3fs", elapsed)
+def _lora_debug(config: LoraConfig) -> dict[str, Any]:
+    local_path = str(config.local_path) if config.local_path is not None else None
     return {
-        "loaded": True,
-        "required": env_flag("LORA_REQUIRED", default=False),
-        "path": str(parent / weight_name),
-        "adapter_name": adapter_name,
-        "load_method": "load_lora_weights",
-        "load_result_repr": repr(load_result),
-        "strength_mode": strength_mode,
-        "elapsed_seconds": elapsed,
+        "loaded": False,
+        "required": config.required,
+        "source": config.source,
+        "repo_id": config.repo_id,
+        "filename": config.filename,
+        "revision": config.revision,
+        "local_path": local_path,
+        "path": local_path,
+        "cache_dir": str(config.cache_dir),
+        "adapter_name": config.adapter_name,
+        "strength_mode": "not_loaded_optional",
+        "effective_scale": None,
+        "elapsed_seconds": 0.0,
+        "error": config.error,
     }
 
 
-def set_lora_scale(pipe: Any, *, adapter_name: str | None, lora_scale: float) -> str:
-    """Apply per-request LoRA scale when Diffusers exposes adapter controls."""
+def load_lora_if_available(
+    pipe: Any,
+    *,
+    lora_path: str | Path | None = None,
+    config: LoraConfig | None = None,
+    download_fn: Callable[..., str] | None = None,
+) -> dict[str, Any]:
+    """Download and load one LoRA, respecting optional and required modes."""
 
+    started = time.perf_counter()
+    resolved_config = config or resolve_lora_config(lora_path=lora_path)
+    debug = _lora_debug(resolved_config)
+
+    if resolved_config.error is not None:
+        debug["elapsed_seconds"] = time.perf_counter() - started
+        if resolved_config.required:
+            raise RuntimeError(f"Required LoRA configuration is invalid: {resolved_config.error}")
+        return debug
+
+    if resolved_config.source == "unavailable":
+        debug["elapsed_seconds"] = time.perf_counter() - started
+        if resolved_config.required:
+            raise FileNotFoundError(
+                "LoRA is required because LORA_REQUIRED=1, but neither a complete "
+                "Hugging Face LoRA configuration nor an existing local LoRA file was found. "
+                f"Searched local path: {resolved_config.local_path}"
+            )
+        return debug
+
+    try:
+        if resolved_config.source == "huggingface_repo":
+            resolved_path = download_lora_from_huggingface(
+                resolved_config,
+                download_fn=download_fn,
+            )
+        else:
+            resolved_path = resolved_config.local_path
+            if resolved_path is None or not resolved_path.exists():
+                raise FileNotFoundError(f"Missing configured LoRA file: {resolved_path}")
+
+        if not hasattr(pipe, "load_lora_weights"):
+            raise RuntimeError(f"{type(pipe).__name__} does not expose load_lora_weights.")
+
+        parent, weight_name = _resolve_lora_file(resolved_path)
+        load_result = pipe.load_lora_weights(
+            str(parent),
+            weight_name=weight_name,
+            adapter_name=resolved_config.adapter_name,
+        )
+        scale_result = set_lora_scale(
+            pipe,
+            adapter_name=resolved_config.adapter_name,
+            lora_scale=1.0,
+        )
+        elapsed = time.perf_counter() - started
+        LOGGER.info("LoRA loading finished in %.3fs", elapsed)
+        local_path = str(parent / weight_name)
+        debug.update(
+            {
+                "loaded": True,
+                "local_path": local_path,
+                "path": local_path,
+                "adapter_name": resolved_config.adapter_name,
+                "load_method": "load_lora_weights",
+                "load_result_repr": repr(load_result),
+                "strength_mode": scale_result["mode"],
+                "effective_scale": scale_result["effective_scale"],
+                "elapsed_seconds": elapsed,
+                "error": None,
+            }
+        )
+        return debug
+    except Exception as exc:
+        elapsed = time.perf_counter() - started
+        error = f"{type(exc).__name__}: {exc}"
+        if resolved_config.required:
+            raise RuntimeError(f"Required LoRA download/load failed: {error}") from exc
+        LOGGER.warning("Optional LoRA could not be loaded: %s", error)
+        debug.update({"elapsed_seconds": elapsed, "error": error})
+        return debug
+
+
+def set_lora_scale(
+    pipe: Any,
+    *,
+    adapter_name: str | None,
+    lora_scale: float,
+) -> dict[str, Any]:
+    """Apply a request-specific LoRA scale and report the effective value."""
+
+    scale = float(lora_scale)
+    if scale < 0:
+        raise ValueError("lora_scale must be non-negative.")
     if not adapter_name:
-        return "not_loaded"
+        return {"mode": "not_loaded", "effective_scale": None}
+
+    if scale > 0 and hasattr(pipe, "enable_lora"):
+        pipe.enable_lora()
     if hasattr(pipe, "set_adapters"):
         try:
-            pipe.set_adapters([adapter_name], adapter_weights=[float(lora_scale)])
-            return "set_adapters"
-        except TypeError:
-            pipe.set_adapters([adapter_name])
-            return "set_adapters_no_weights"
-    return "loaded_default_weight"
+            pipe.set_adapters([adapter_name], adapter_weights=[scale])
+            return {"mode": "set_adapters", "effective_scale": scale}
+        except TypeError as exc:
+            if scale == 0 and hasattr(pipe, "disable_lora"):
+                pipe.disable_lora()
+                return {"mode": "disable_lora", "effective_scale": 0.0}
+            if scale == 1.0:
+                pipe.set_adapters([adapter_name])
+                return {"mode": "set_adapters_no_weights", "effective_scale": 1.0}
+            raise RuntimeError(
+                f"{type(pipe).__name__} cannot apply request-specific LoRA scale {scale}."
+            ) from exc
+
+    if scale == 0 and hasattr(pipe, "disable_lora"):
+        pipe.disable_lora()
+        return {"mode": "disable_lora", "effective_scale": 0.0}
+    if scale == 1.0:
+        return {"mode": "loaded_default_weight", "effective_scale": 1.0}
+    raise RuntimeError(
+        f"{type(pipe).__name__} does not expose an API for LoRA scale {scale}."
+    )
 
 
 def _pipeline_accepts(pipe: Any, parameter_name: str) -> bool:

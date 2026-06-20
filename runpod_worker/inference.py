@@ -165,9 +165,11 @@ class FluxFillWorker:
         torch = loaded.torch
 
         set_partial_noise(pipe, settings.partial_noise)
-        lora_strength_mode = set_lora_scale(
+        lora_scale_result = set_lora_scale(
             pipe,
-            adapter_name=loaded.lora.get("adapter_name"),
+            adapter_name=(
+                loaded.lora.get("adapter_name") if loaded.lora.get("loaded") else None
+            ),
             lora_scale=settings.lora_scale,
         )
 
@@ -225,7 +227,8 @@ class FluxFillWorker:
             "lora": {
                 **loaded.lora,
                 "requested_scale": settings.lora_scale,
-                "request_strength_mode": lora_strength_mode,
+                "effective_scale": lora_scale_result["effective_scale"],
+                "request_strength_mode": lora_scale_result["mode"],
             },
             "inference_settings": {
                 "prompt": settings.prompt,

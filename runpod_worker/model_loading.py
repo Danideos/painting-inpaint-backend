@@ -6,6 +6,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -520,29 +521,67 @@ def set_lora_scale(
     if not adapter_name:
         return {"mode": "not_loaded", "effective_scale": None}
 
+    cached_adapter = getattr(pipe, "_painting_inpaint_lora_adapter_name", None)
+    cached_scale = getattr(pipe, "_painting_inpaint_lora_scale", None)
+    if cached_adapter == adapter_name and _same_lora_scale(cached_scale, scale):
+        return {"mode": "cached_adapter_scale", "effective_scale": scale}
+
     if hasattr(pipe, "set_adapters"):
         try:
-            pipe.set_adapters([adapter_name], adapter_weights=[scale])
+            with _torch_inference_mode_if_available():
+                pipe.set_adapters([adapter_name], adapter_weights=[scale])
+            _remember_lora_scale(pipe, adapter_name=adapter_name, scale=scale)
             return {"mode": "set_adapters", "effective_scale": scale}
         except TypeError as exc:
             if scale == 0 and hasattr(pipe, "disable_lora"):
-                pipe.disable_lora()
+                with _torch_inference_mode_if_available():
+                    pipe.disable_lora()
+                _remember_lora_scale(pipe, adapter_name=adapter_name, scale=0.0)
                 return {"mode": "disable_lora", "effective_scale": 0.0}
             if scale == 1.0:
-                pipe.set_adapters([adapter_name])
+                with _torch_inference_mode_if_available():
+                    pipe.set_adapters([adapter_name])
+                _remember_lora_scale(pipe, adapter_name=adapter_name, scale=1.0)
                 return {"mode": "set_adapters_no_weights", "effective_scale": 1.0}
             raise RuntimeError(
                 f"{type(pipe).__name__} cannot apply request-specific LoRA scale {scale}."
             ) from exc
 
     if scale == 0 and hasattr(pipe, "disable_lora"):
-        pipe.disable_lora()
+        with _torch_inference_mode_if_available():
+            pipe.disable_lora()
+        _remember_lora_scale(pipe, adapter_name=adapter_name, scale=0.0)
         return {"mode": "disable_lora", "effective_scale": 0.0}
     if scale == 1.0:
+        _remember_lora_scale(pipe, adapter_name=adapter_name, scale=1.0)
         return {"mode": "loaded_default_weight", "effective_scale": 1.0}
     raise RuntimeError(
         f"{type(pipe).__name__} does not expose an API for LoRA scale {scale}."
     )
+
+
+def _same_lora_scale(left: Any, right: float) -> bool:
+    try:
+        return abs(float(left) - float(right)) <= 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
+def _remember_lora_scale(pipe: Any, *, adapter_name: str, scale: float) -> None:
+    try:
+        pipe._painting_inpaint_lora_adapter_name = adapter_name
+        pipe._painting_inpaint_lora_scale = float(scale)
+    except Exception:
+        return
+
+
+def _torch_inference_mode_if_available() -> Any:
+    try:
+        import torch
+
+        return torch.inference_mode()
+    except Exception:
+        return nullcontext()
 
 
 def _pipeline_accepts(pipe: Any, parameter_name: str) -> bool:

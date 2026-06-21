@@ -72,6 +72,63 @@ def _json_timestep(timestep: Any) -> Any:
     return str(timestep)
 
 
+def _cuda_memory_stats(torch: Any, *, prefix: str = "") -> dict[str, Any]:
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None:
+        return {f"{prefix}cuda_available": False}
+    try:
+        cuda_available = bool(cuda.is_available())
+    except Exception:
+        cuda_available = False
+    stats: dict[str, Any] = {f"{prefix}cuda_available": cuda_available}
+    if not cuda_available:
+        return stats
+
+    def _bytes_to_mb(value: Any) -> float | None:
+        try:
+            return round(float(value) / (1024 * 1024), 2)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        device_index = int(cuda.current_device())
+        stats[f"{prefix}cuda_device_index"] = device_index
+        if hasattr(cuda, "get_device_name"):
+            stats[f"{prefix}cuda_device_name"] = cuda.get_device_name(device_index)
+    except Exception:
+        device_index = None
+
+    metric_names = (
+        ("memory_allocated", "allocated_mb"),
+        ("memory_reserved", "reserved_mb"),
+        ("max_memory_allocated", "peak_allocated_mb"),
+        ("max_memory_reserved", "peak_reserved_mb"),
+    )
+    for method_name, output_name in metric_names:
+        method = getattr(cuda, method_name, None)
+        if method is None:
+            continue
+        try:
+            value = method(device_index) if device_index is not None else method()
+        except TypeError:
+            value = method()
+        except Exception:
+            continue
+        stats[f"{prefix}{output_name}"] = _bytes_to_mb(value)
+    return stats
+
+
+def _reset_cuda_peak_memory(torch: Any) -> None:
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None:
+        return
+    try:
+        if cuda.is_available() and hasattr(cuda, "reset_peak_memory_stats"):
+            cuda.reset_peak_memory_stats()
+    except Exception:
+        return
+
+
 def _effective_step_total(pipe: Any, settings: RequestSettings) -> int:
     schedule_debug = getattr(pipe, "_last_schedule_debug", {}) or {}
     total = (
@@ -371,6 +428,11 @@ class FluxFillWorker:
 
         with TemporaryDirectory(prefix="flux_fill_worker_") as temp_dir:
             temp_path = Path(temp_dir)
+            memory_before_inference = _cuda_memory_stats(
+                torch,
+                prefix="pre_inference_",
+            )
+            _reset_cuda_peak_memory(torch)
             reporter.emit(
                 "inference_start",
                 stage="inference",
@@ -387,6 +449,10 @@ class FluxFillWorker:
             with torch.inference_mode():
                 raw = pipe(**call_kwargs).images[0].convert("RGB")
             inference_seconds = time.perf_counter() - inference_started
+            inference_memory = {
+                **memory_before_inference,
+                **_cuda_memory_stats(torch, prefix="inference_"),
+            }
             schedule_debug = getattr(pipe, "_last_schedule_debug", {}) or {}
             reporter.emit(
                 "inference_done",
@@ -399,6 +465,7 @@ class FluxFillWorker:
                 metadata={
                     "inference_seconds": inference_seconds,
                     "schedule_debug": schedule_debug,
+                    "gpu_memory": inference_memory,
                 },
             )
 
@@ -451,6 +518,7 @@ class FluxFillWorker:
                 **loaded.timings,
                 "inference_seconds": inference_seconds,
             },
+            "gpu_memory": inference_memory,
             "model": loaded.model,
             "lora": {
                 **loaded.lora,

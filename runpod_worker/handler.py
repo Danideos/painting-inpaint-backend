@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import traceback
+from collections.abc import Iterator
 from typing import Any
 
-from .inference import WorkerInputError, run_job_input
+from .inference import WorkerInputError, run_job_input, run_job_input_streaming
 
 try:
     import runpod
@@ -26,11 +27,31 @@ def _payload_from_job(job: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def handler(job: dict[str, Any]) -> dict[str, Any]:
+def _stream_progress_requested(payload: dict[str, Any]) -> bool:
+    value = payload.get("stream_progress", False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def handler(
+    job: dict[str, Any],
+) -> dict[str, Any] | Iterator[dict[str, Any]] | list[dict[str, Any]]:
     """RunPod handler function."""
 
     try:
-        return run_job_input(_payload_from_job(job))
+        payload = _payload_from_job(job)
+        if _stream_progress_requested(payload):
+            stream = run_job_input_streaming(
+                payload,
+                job_id=str(job.get("id")) if job.get("id") is not None else None,
+            )
+            if job.get("id") == "local_test":
+                return list(stream)
+            return stream
+        return run_job_input(payload)
     except WorkerInputError as exc:
         LOGGER.warning("Invalid request: %s", exc)
         return {"error": str(exc), "error_type": type(exc).__name__}
@@ -46,4 +67,4 @@ def handler(job: dict[str, Any]) -> dict[str, Any]:
 if __name__ == "__main__":
     if runpod is None:
         raise RuntimeError("The runpod package is required to start the serverless worker.")
-    runpod.serverless.start({"handler": handler})
+    runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})

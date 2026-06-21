@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 import time
+import traceback
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,14 +21,107 @@ from painting_inpaint.masks import binarize_mask, ensure_same_size, mask_coverag
 from .image_io import image_to_base64, load_request_image, normalize_output_format
 from .model_loading import LoadedPipeline, load_pipeline, set_lora_scale
 from .partial_noise import normalize_partial_noise, set_partial_noise
+from .progress import ProgressReporter
 
 LOGGER = logging.getLogger(__name__)
 
 DIFFUSERS_STRENGTH_FOR_CALL = 1.0
+_STREAM_DONE = object()
 
 
 class WorkerInputError(ValueError):
     """Raised when a request payload is invalid."""
+
+
+def _payload_flag(payload: dict[str, Any], key: str, *, default: bool = False) -> bool:
+    value = payload.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _pipeline_accepts_argument(pipe: Any, parameter_name: str) -> bool:
+    import inspect
+
+    try:
+        signature = inspect.signature(pipe.__call__)
+    except Exception:
+        return False
+    if parameter_name in signature.parameters:
+        return True
+    return any(
+        param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in signature.parameters.values()
+    )
+
+
+def _json_timestep(timestep: Any) -> Any:
+    if timestep is None or isinstance(timestep, str | int | float | bool):
+        return timestep
+    try:
+        if hasattr(timestep, "detach"):
+            timestep = timestep.detach()
+        if hasattr(timestep, "cpu"):
+            timestep = timestep.cpu()
+        if hasattr(timestep, "item"):
+            return timestep.item()
+    except Exception:
+        pass
+    return str(timestep)
+
+
+def _effective_step_total(pipe: Any, settings: RequestSettings) -> int:
+    schedule_debug = getattr(pipe, "_last_schedule_debug", {}) or {}
+    total = (
+        schedule_debug.get("effective_num_steps")
+        or schedule_debug.get("num_inference_steps")
+        or settings.num_inference_steps
+    )
+    try:
+        parsed = int(total)
+    except (TypeError, ValueError):
+        parsed = settings.num_inference_steps
+    return max(parsed, 1)
+
+
+def _add_inference_progress_callback(
+    *,
+    call_kwargs: dict[str, Any],
+    pipe: Any,
+    settings: RequestSettings,
+    reporter: ProgressReporter,
+) -> None:
+    if not _pipeline_accepts_argument(pipe, "callback_on_step_end"):
+        reporter.emit(
+            "inference_step_logging_unavailable",
+            stage="inference",
+            message="Pipeline does not support per-step progress callbacks.",
+            metadata={"pipeline_class": type(pipe).__name__},
+        )
+        return
+
+    def _callback(
+        callback_pipe: Any,
+        step_index: int,
+        timestep: Any,
+        callback_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        total = _effective_step_total(callback_pipe or pipe, settings)
+        current = min(max(int(step_index) + 1, 1), total)
+        reporter.emit(
+            "inference_step",
+            stage="inference",
+            message=f"Inference step {current}/{total}.",
+            progress={"current": current, "total": total},
+            metadata={"timestep": _json_timestep(timestep)},
+        )
+        return callback_kwargs
+
+    call_kwargs["callback_on_step_end"] = _callback
+    if _pipeline_accepts_argument(pipe, "callback_on_step_end_tensor_inputs"):
+        call_kwargs["callback_on_step_end_tensor_inputs"] = ["latents"]
 
 
 @dataclass(frozen=True)
@@ -151,26 +248,99 @@ class FluxFillWorker:
 
     @property
     def loaded(self) -> LoadedPipeline:
+        return self.get_loaded()
+
+    def get_loaded(self, *, reporter: ProgressReporter | None = None) -> LoadedPipeline:
         if self._loaded is None:
             started = time.perf_counter()
-            self._loaded = load_pipeline()
+            self._loaded = load_pipeline(reporter=reporter)
             LOGGER.info("Pipeline ready in %.3fs", time.perf_counter() - started)
+        elif reporter is not None:
+            reporter.emit(
+                "model_load_start",
+                stage="model",
+                message="Reusing cached FLUX Fill pipeline.",
+                metadata={"cached": True},
+            )
+            reporter.emit(
+                "model_load_done",
+                stage="model",
+                message="Cached FLUX Fill pipeline ready.",
+                metadata={
+                    "cached": True,
+                    "model": self._loaded.model,
+                    "lora_loaded": bool(self._loaded.lora.get("loaded")),
+                },
+            )
         return self._loaded
 
-    def run(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def run(
+        self,
+        payload: dict[str, Any],
+        *,
+        reporter: ProgressReporter | None = None,
+    ) -> dict[str, Any]:
+        include_progress_history = _payload_flag(
+            payload,
+            "include_progress_history",
+            default=False,
+        )
+        if reporter is None:
+            reporter = ProgressReporter(
+                enabled=include_progress_history,
+                keep_history=include_progress_history,
+            )
         settings = parse_request_settings(payload)
+        reporter.emit(
+            "input_decode_start",
+            stage="input",
+            message="Decoding request image and mask.",
+        )
         image, mask = load_request_images(payload)
-        loaded = self.loaded
+        mask_fraction = mask_coverage(mask)
+        reporter.emit(
+            "input_decode_done",
+            stage="input",
+            message="Request image and mask decoded.",
+            metadata={
+                "image_width": image.width,
+                "image_height": image.height,
+                "mask_width": mask.width,
+                "mask_height": mask.height,
+                "mask_coverage": mask_fraction,
+            },
+        )
+        loaded = self.get_loaded(reporter=reporter)
         pipe = loaded.pipe
         torch = loaded.torch
 
         set_partial_noise(pipe, settings.partial_noise)
+        reporter.emit(
+            "lora_scale_apply_start",
+            stage="lora",
+            message="Applying request LoRA scale.",
+            metadata={
+                "requested_scale": settings.lora_scale,
+                "adapter_loaded": bool(loaded.lora.get("loaded")),
+                "adapter_name": loaded.lora.get("adapter_name"),
+            },
+        )
         lora_scale_result = set_lora_scale(
             pipe,
             adapter_name=(
                 loaded.lora.get("adapter_name") if loaded.lora.get("loaded") else None
             ),
             lora_scale=settings.lora_scale,
+        )
+        reporter.emit(
+            "lora_scale_apply_done",
+            stage="lora",
+            message="Request LoRA scale applied.",
+            metadata={
+                "requested_scale": settings.lora_scale,
+                "effective_scale": lora_scale_result["effective_scale"],
+                "mode": lora_scale_result["mode"],
+            },
         )
 
         generator = None
@@ -192,28 +362,86 @@ class FluxFillWorker:
             call_kwargs["generator"] = generator
         if loaded.supports_negative_prompt:
             call_kwargs["negative_prompt"] = settings.negative_prompt
+        _add_inference_progress_callback(
+            call_kwargs=call_kwargs,
+            pipe=pipe,
+            settings=settings,
+            reporter=reporter,
+        )
 
         with TemporaryDirectory(prefix="flux_fill_worker_") as temp_dir:
             temp_path = Path(temp_dir)
+            reporter.emit(
+                "inference_start",
+                stage="inference",
+                message="Starting FLUX Fill inference.",
+                progress={"current": 0, "total": settings.num_inference_steps},
+                metadata={
+                    "num_inference_steps": settings.num_inference_steps,
+                    "partial_noise": settings.partial_noise,
+                    "guidance_scale": settings.guidance_scale,
+                    "seed": settings.seed,
+                },
+            )
             inference_started = time.perf_counter()
             with torch.inference_mode():
                 raw = pipe(**call_kwargs).images[0].convert("RGB")
             inference_seconds = time.perf_counter() - inference_started
+            schedule_debug = getattr(pipe, "_last_schedule_debug", {}) or {}
+            reporter.emit(
+                "inference_done",
+                stage="inference",
+                message="FLUX Fill inference completed.",
+                progress={
+                    "current": _effective_step_total(pipe, settings),
+                    "total": _effective_step_total(pipe, settings),
+                },
+                metadata={
+                    "inference_seconds": inference_seconds,
+                    "schedule_debug": schedule_debug,
+                },
+            )
 
             if raw.size != image.size:
                 raw = raw.resize(image.size, Image.Resampling.LANCZOS)
+            reporter.emit(
+                "hard_composite_start",
+                stage="output",
+                message="Hard-compositing output with preserved pixels.",
+            )
             composite = hard_composite(image, raw, mask)
             changed_outside_mask = outside_mask_changed(image, composite, mask)
+            reporter.emit(
+                "hard_composite_done",
+                stage="output",
+                message="Hard composite completed.",
+                metadata={"outside_mask_changed": changed_outside_mask},
+            )
             if changed_outside_mask:
                 raise RuntimeError("Hard composite changed pixels outside the edit mask.")
 
             output_path = temp_path / f"composite.{settings.output_format}"
+            reporter.emit(
+                "output_encode_start",
+                stage="output",
+                message="Encoding output image.",
+                metadata={"output_format": settings.output_format},
+            )
             composite.save(output_path)
             encoded = image_to_base64(composite, output_format=settings.output_format)
+            reporter.emit(
+                "output_encode_done",
+                stage="output",
+                message="Output image encoded.",
+                metadata={
+                    "output_format": settings.output_format,
+                    "width": composite.width,
+                    "height": composite.height,
+                },
+            )
 
-        schedule_debug = getattr(pipe, "_last_schedule_debug", {}) or {}
         latent_debug = getattr(pipe, "_last_latent_init_debug", {}) or {}
-        return {
+        output = {
             "image_base64": encoded,
             "output_format": settings.output_format,
             "width": composite.width,
@@ -246,6 +474,9 @@ class FluxFillWorker:
             "latent_init_debug": latent_debug,
             "outside_mask_changed_after_hard_composite": changed_outside_mask,
         }
+        if include_progress_history:
+            output["run_report"] = {"progress_events": reporter.history}
+        return output
 
 
 _WORKER = FluxFillWorker()
@@ -256,4 +487,80 @@ def run_job_input(payload: dict[str, Any]) -> dict[str, Any]:
 
     if not isinstance(payload, dict):
         raise WorkerInputError("RunPod job input must be a JSON object.")
-    return _WORKER.run(payload)
+    include_progress_history = _payload_flag(
+        payload,
+        "include_progress_history",
+        default=False,
+    )
+    reporter = ProgressReporter(
+        enabled=include_progress_history,
+        keep_history=include_progress_history,
+    )
+    if include_progress_history:
+        reporter.emit(
+            "job_received",
+            stage="input",
+            message="RunPod job received.",
+            metadata={"stream_progress": False},
+        )
+    return _WORKER.run(payload, reporter=reporter)
+
+
+def run_job_input_streaming(
+    payload: dict[str, Any],
+    *,
+    job_id: str | None = None,
+    worker: FluxFillWorker | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Run one RunPod input payload and yield progress events as they happen."""
+
+    events: queue.Queue[dict[str, Any] | object] = queue.Queue()
+    reporter = ProgressReporter(
+        job_id=job_id,
+        enabled=True,
+        keep_history=True,
+        on_event=events.put,
+    )
+    service = worker or _WORKER
+
+    def _run() -> None:
+        try:
+            if not isinstance(payload, dict):
+                raise WorkerInputError("RunPod job input must be a JSON object.")
+            reporter.emit(
+                "job_received",
+                stage="input",
+                message="RunPod job received.",
+                metadata={"stream_progress": True},
+            )
+            output = service.run(payload, reporter=reporter)
+            reporter.final(
+                output=output,
+                message="RunPod job completed.",
+                metadata={
+                    "output_format": output.get("output_format"),
+                    "width": output.get("width"),
+                    "height": output.get("height"),
+                },
+            )
+        except Exception as exc:
+            reporter.error(
+                message=str(exc),
+                metadata={
+                    "error_type": type(exc).__name__,
+                    "traceback": traceback.format_exc(limit=5),
+                },
+            )
+        finally:
+            events.put(_STREAM_DONE)
+
+    thread = threading.Thread(target=_run, name="runpod-progress-worker", daemon=True)
+    thread.start()
+    try:
+        while True:
+            event = events.get()
+            if event is _STREAM_DONE:
+                break
+            yield event
+    finally:
+        thread.join()

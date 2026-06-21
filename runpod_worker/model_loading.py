@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .partial_noise import FluxFillPartialNoisePipeline
+from .progress import ProgressReporter
 
 LOGGER = logging.getLogger(__name__)
 
@@ -328,27 +329,67 @@ def _lora_debug(config: LoraConfig) -> dict[str, Any]:
     }
 
 
+def _lora_event_metadata(config: LoraConfig, **extra: Any) -> dict[str, Any]:
+    metadata = {
+        "required": config.required,
+        "source": config.source,
+        "repo_id": config.repo_id,
+        "filename": config.filename,
+        "revision": config.revision,
+        "local_path": str(config.local_path) if config.local_path is not None else None,
+        "cache_dir": str(config.cache_dir),
+        "adapter_name": config.adapter_name,
+    }
+    metadata.update(extra)
+    return metadata
+
+
 def load_lora_if_available(
     pipe: Any,
     *,
     lora_path: str | Path | None = None,
     config: LoraConfig | None = None,
     download_fn: Callable[..., str] | None = None,
+    reporter: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Download and load one LoRA, respecting optional and required modes."""
 
     started = time.perf_counter()
+    if reporter is not None:
+        reporter.emit(
+            "lora_resolve_start",
+            stage="lora",
+            message="Resolving LoRA configuration.",
+        )
     resolved_config = config or resolve_lora_config(lora_path=lora_path)
     debug = _lora_debug(resolved_config)
 
     if resolved_config.error is not None:
         debug["elapsed_seconds"] = time.perf_counter() - started
+        if reporter is not None:
+            reporter.emit(
+                "lora_load_done",
+                stage="lora",
+                message="LoRA configuration is invalid.",
+                metadata=_lora_event_metadata(
+                    resolved_config,
+                    loaded=False,
+                    error=resolved_config.error,
+                ),
+            )
         if resolved_config.required:
             raise RuntimeError(f"Required LoRA configuration is invalid: {resolved_config.error}")
         return debug
 
     if resolved_config.source == "unavailable":
         debug["elapsed_seconds"] = time.perf_counter() - started
+        if reporter is not None:
+            reporter.emit(
+                "lora_load_done",
+                stage="lora",
+                message="No LoRA weights configured; continuing without LoRA.",
+                metadata=_lora_event_metadata(resolved_config, loaded=False),
+            )
         if resolved_config.required:
             raise FileNotFoundError(
                 "LoRA is required because LORA_REQUIRED=1, but neither a complete "
@@ -359,10 +400,27 @@ def load_lora_if_available(
 
     try:
         if resolved_config.source == "huggingface_repo":
+            if reporter is not None:
+                reporter.emit(
+                    "lora_download_start",
+                    stage="lora",
+                    message="Downloading LoRA weights from Hugging Face.",
+                    metadata=_lora_event_metadata(resolved_config),
+                )
             resolved_path = download_lora_from_huggingface(
                 resolved_config,
                 download_fn=download_fn,
             )
+            if reporter is not None:
+                reporter.emit(
+                    "lora_download_done",
+                    stage="lora",
+                    message="LoRA weights downloaded.",
+                    metadata=_lora_event_metadata(
+                        resolved_config,
+                        resolved_path=str(resolved_path),
+                    ),
+                )
         else:
             resolved_path = resolved_config.local_path
             if resolved_path is None or not resolved_path.exists():
@@ -372,6 +430,17 @@ def load_lora_if_available(
             raise RuntimeError(f"{type(pipe).__name__} does not expose load_lora_weights.")
 
         parent, weight_name = _resolve_lora_file(resolved_path)
+        if reporter is not None:
+            reporter.emit(
+                "lora_load_start",
+                stage="lora",
+                message="Loading LoRA weights into the pipeline.",
+                metadata=_lora_event_metadata(
+                    resolved_config,
+                    weight_name=weight_name,
+                    parent=str(parent),
+                ),
+            )
         load_result = pipe.load_lora_weights(
             str(parent),
             weight_name=weight_name,
@@ -399,6 +468,21 @@ def load_lora_if_available(
                 "error": None,
             }
         )
+        if reporter is not None:
+            reporter.emit(
+                "lora_load_done",
+                stage="lora",
+                message="LoRA weights loaded.",
+                metadata=_lora_event_metadata(
+                    resolved_config,
+                    loaded=True,
+                    local_path=local_path,
+                    weight_name=weight_name,
+                    effective_scale=scale_result["effective_scale"],
+                    strength_mode=scale_result["mode"],
+                    elapsed_seconds=elapsed,
+                ),
+            )
         return debug
     except Exception as exc:
         elapsed = time.perf_counter() - started
@@ -407,6 +491,18 @@ def load_lora_if_available(
             raise RuntimeError(f"Required LoRA download/load failed: {error}") from exc
         LOGGER.warning("Optional LoRA could not be loaded: %s", error)
         debug.update({"elapsed_seconds": elapsed, "error": error})
+        if reporter is not None:
+            reporter.emit(
+                "lora_load_done",
+                stage="lora",
+                message="Optional LoRA could not be loaded; continuing without LoRA.",
+                metadata=_lora_event_metadata(
+                    resolved_config,
+                    loaded=False,
+                    error=error,
+                    elapsed_seconds=elapsed,
+                ),
+            )
         return debug
 
 
@@ -464,7 +560,7 @@ def _pipeline_accepts(pipe: Any, parameter_name: str) -> bool:
     )
 
 
-def load_pipeline() -> LoadedPipeline:
+def load_pipeline(*, reporter: ProgressReporter | None = None) -> LoadedPipeline:
     """Load the FLUX Fill pipeline, optional LoRA, and performance settings."""
 
     if not hasattr(FluxFillPartialNoisePipeline, "from_pretrained"):
@@ -475,6 +571,13 @@ def load_pipeline() -> LoadedPipeline:
     import torch
 
     model_id = os.environ.get("MODEL_ID", DEFAULT_MODEL_ID)
+    if reporter is not None:
+        reporter.emit(
+            "model_load_start",
+            stage="model",
+            message="Loading FLUX Fill pipeline.",
+            metadata={"model_id": model_id},
+        )
     timings: dict[str, float] = {}
     resolve_started = time.perf_counter()
     resolution = resolve_model_load_target(model_id)
@@ -511,9 +614,6 @@ def load_pipeline() -> LoadedPipeline:
         if env_flag("ENABLE_VAE_SLICING", default=True) and hasattr(pipe.vae, "enable_slicing"):
             pipe.vae.enable_slicing()
     timings["device_setup_seconds"] = time.perf_counter() - device_started
-
-    lora = load_lora_if_available(pipe)
-    timings["lora_loading_seconds"] = float(lora.get("elapsed_seconds", 0.0))
     model = {
         "model_id": model_id,
         "load_target": resolution.load_target,
@@ -525,6 +625,16 @@ def load_pipeline() -> LoadedPipeline:
         "device_mode": device_mode,
         "pipeline_class": type(pipe).__name__,
     }
+    if reporter is not None:
+        reporter.emit(
+            "model_load_done",
+            stage="model",
+            message="FLUX Fill pipeline loaded.",
+            metadata={**model, "timings": timings},
+        )
+
+    lora = load_lora_if_available(pipe, reporter=reporter)
+    timings["lora_loading_seconds"] = float(lora.get("elapsed_seconds", 0.0))
     return LoadedPipeline(
         pipe=pipe,
         torch=torch,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import traceback
 from collections.abc import Iterator
 from typing import Any
@@ -36,21 +37,22 @@ def _stream_progress_requested(payload: dict[str, Any]) -> bool:
     return bool(value)
 
 
-def handler(
-    job: dict[str, Any],
-) -> dict[str, Any] | Iterator[dict[str, Any]] | list[dict[str, Any]]:
-    """RunPod handler function."""
+def handler(job: dict[str, Any]) -> dict[str, Any] | list[dict[str, Any]]:
+    """Standard RunPod handler function.
+
+    RunPod only treats configured generator functions as streaming handlers. This
+    plain handler is kept for non-streaming mode and local compatibility.
+    """
 
     try:
         payload = _payload_from_job(job)
         if _stream_progress_requested(payload):
-            stream = run_job_input_streaming(
-                payload,
-                job_id=str(job.get("id")) if job.get("id") is not None else None,
+            return list(
+                run_job_input_streaming(
+                    payload,
+                    job_id=str(job.get("id")) if job.get("id") is not None else None,
+                )
             )
-            if job.get("id") == "local_test":
-                return list(stream)
-            return stream
         return run_job_input(payload)
     except WorkerInputError as exc:
         LOGGER.warning("Invalid request: %s", exc)
@@ -64,7 +66,40 @@ def handler(
         }
 
 
+def streaming_handler(job: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Generator RunPod handler function used for the /stream endpoint."""
+
+    try:
+        payload = _payload_from_job(job)
+        if _stream_progress_requested(payload):
+            yield from run_job_input_streaming(
+                payload,
+                job_id=str(job.get("id")) if job.get("id") is not None else None,
+            )
+            return
+        yield run_job_input(payload)
+    except WorkerInputError as exc:
+        LOGGER.warning("Invalid request: %s", exc)
+        yield {"error": str(exc), "error_type": type(exc).__name__}
+    except Exception as exc:
+        LOGGER.exception("Inference failed")
+        yield {
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": traceback.format_exc(limit=5),
+        }
+
+
+def _runpod_handler() -> Any:
+    mode = os.environ.get("RUNPOD_HANDLER_MODE", "streaming").strip().lower()
+    if mode in {"standard", "sync", "non_streaming", "non-streaming"}:
+        return handler
+    return streaming_handler
+
+
 if __name__ == "__main__":
     if runpod is None:
         raise RuntimeError("The runpod package is required to start the serverless worker.")
-    runpod.serverless.start({"handler": handler, "return_aggregate_stream": True})
+    runpod.serverless.start(
+        {"handler": _runpod_handler(), "return_aggregate_stream": True}
+    )

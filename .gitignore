@@ -1,43 +1,45 @@
-.git/
-.idea/
-.vscode/
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
 .venv/
 venv/
 env/
 
-__pycache__/
-*.py[cod]
+# Build and test artifacts
+.tmp/
+dist/
+build/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .coverage
 htmlcov/
-dist/
-build/
 
-.tmp/
-data/
+# Generated/local payloads and runs
 runpod_runs/
-runs/
-runs_test/
-models/
-hf_cache/
-thesis/
-notebooks/
-docs/experiments/
 runpod_smoke_payload.json
 runpod_response.json
 runpod_smoke_output.png
 runpod_*_payload.json
 
+# Local data and secrets
+data/
+runs/
+runs_test/
+models/
+hf_cache/
+thesis/
 .env
 .env.*
-!.env.example
-!.env.metacentrum.example
 secrets/
 *.token
 *token*.txt
 
+# Model artifacts
+*.safetensors
 *.ckpt
 *.pt
 *.pth
@@ -46,7 +48,3 @@ secrets/
 *.tar.gz
 *.tgz
 *.zip
-**/*.safetensors
-
-Northern_Renaissance/
-BC.MD

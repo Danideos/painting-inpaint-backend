@@ -15,9 +15,13 @@ from typing import Any
 
 from PIL import Image
 
-from painting_inpaint.compositing import hard_composite, outside_mask_changed
-from painting_inpaint.masks import binarize_mask, ensure_same_size, mask_coverage
-
+from .image_helpers import (
+    binarize_mask,
+    ensure_same_size,
+    hard_composite,
+    mask_coverage,
+    outside_mask_changed,
+)
 from .image_io import image_to_base64, load_request_image, normalize_output_format
 from .model_loading import LoadedPipeline, load_pipeline, set_lora_scale
 from .partial_noise import normalize_partial_noise, set_partial_noise

@@ -5,8 +5,7 @@ inpainting with the project `partial_noise` schedule control and optional LoRA.
 
 ## Build
 
-Build from the repository root so the Docker context includes both `runpod_worker/`
-and `src/painting_inpaint/`:
+Build from the repository root. The worker is self-contained under `runpod_worker/`:
 
 ```bash
 docker build --platform linux/amd64 -f runpod_worker/Dockerfile -t ghcr.io/<owner>/flux-fill-worker:latest .
@@ -14,8 +13,10 @@ docker push ghcr.io/<owner>/flux-fill-worker:latest
 ```
 
 The image includes code and dependencies, but not the base FLUX weights. The root
-`.dockerignore` excludes data, runs, HF caches, secrets, and model weights, while
-explicitly allowing `runpod_worker/loras/*.safetensors` so a LoRA can be baked in.
+`.dockerignore` excludes data, runs, HF caches, secrets, generated smoke artifacts,
+and model weights. LoRA safetensors are excluded by default and should be loaded from
+Hugging Face or a mounted path unless you intentionally change the Docker policy to
+bake them into the image.
 
 ## LoRA
 
@@ -45,20 +46,20 @@ For smoke tests, LoRA is optional. For production, set:
 LORA_REQUIRED=1
 ```
 
-Default baked-in path:
+Default local path:
 
 ```text
 /app/runpod_worker/loras/pytorch_lora_weights.safetensors
 ```
 
-Before building, copy the selected git-ignored LoRA file to:
+If you intentionally choose to bake a LoRA into the image later, change `.dockerignore`
+first and copy the selected git-ignored LoRA file to:
 
 ```text
 runpod_worker/loras/pytorch_lora_weights.safetensors
 ```
 
-Or set `LORA_PATH` to another mounted/downloaded file path. Never commit the LoRA
-unless you intentionally change the repository policy.
+Or set `LORA_PATH` to another mounted/downloaded file path. Never commit the LoRA.
 
 Hugging Face repo configuration takes precedence over `LORA_PATH`. If only one of
 `LORA_REPO_ID` and `LORA_FILENAME` is set, LoRA is treated as unavailable. Optional
@@ -146,8 +147,8 @@ uv run python -c "import runpod_worker.handler; print('ok')"
 Run tests:
 
 ```bash
-uv run pytest
-uv run ruff check src/painting_inpaint scripts tests runpod_worker
+uv run --with pytest --with numpy --with pillow pytest tests
+uv run --with ruff ruff check runpod_worker tests
 ```
 
 ## Safety

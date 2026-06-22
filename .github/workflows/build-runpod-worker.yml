@@ -5,7 +5,6 @@ on:
   push:
     paths:
       - "runpod_worker/**"
-      - "src/**"
       - ".dockerignore"
       - ".github/workflows/build-runpod-worker.yml"
 

@@ -3,14 +3,10 @@ from __future__ import annotations
 import sys
 from dataclasses import replace
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
 from runpod_worker.model_loading import (
-    ModelPathResolution,
-    build_fp8_quantization_config,
-    load_pipeline,
     load_lora_if_available,
     resolve_hf_snapshot_path,
     resolve_lora_config,
@@ -101,109 +97,9 @@ class _FakeTorch:
         return self._inference_mode_enabled
 
 
-class _FakeCuda:
-    def __init__(
-        self,
-        *,
-        available: bool = True,
-        capability: tuple[int, int] = (8, 9),
-        device_name: str = "NVIDIA L40S",
-    ):
-        self.available = available
-        self.capability = capability
-        self.device_name = device_name
-
-    def is_available(self):
-        return self.available
-
-    def is_bf16_supported(self):
-        return True
-
-    def current_device(self):
-        return 0
-
-    def get_device_name(self, device_index=0):
-        return self.device_name
-
-    def get_device_capability(self, device_index=0):
-        return self.capability
-
-
-class _FakeTorchForLoading:
-    bfloat16 = "torch.bfloat16"
-    float16 = "torch.float16"
-    float32 = "torch.float32"
-
-    def __init__(self, cuda: _FakeCuda | None = None):
-        self.cuda = cuda or _FakeCuda()
-
-
-class _FakeQuantizedPipeline:
-    captured_kwargs: dict | None = None
-
-    vae = None
-
-    @classmethod
-    def from_pretrained(cls, load_target, **kwargs):
-        cls.captured_kwargs = {"load_target": load_target, **kwargs}
-        return cls()
-
-    def enable_model_cpu_offload(self):
-        self.cpu_offload_enabled = True
-
-
-class _FakePipelineQuantizationConfig:
-    def __init__(self, *, quant_mapping):
-        self.quant_mapping = quant_mapping
-
-
-class _FakeTorchAoConfig:
-    def __init__(self, config):
-        self.config = config
-
-
-class _FakeFloat8WeightOnlyConfig:
-    pass
-
-
 def _clear_lora_env(monkeypatch):
     for name in LORA_ENV_NAMES:
         monkeypatch.delenv(name, raising=False)
-
-
-def _install_fake_fp8_modules(monkeypatch):
-    diffusers = ModuleType("diffusers")
-    diffusers.PipelineQuantizationConfig = _FakePipelineQuantizationConfig
-    diffusers.TorchAoConfig = _FakeTorchAoConfig
-    torchao = ModuleType("torchao")
-    torchao_quantization = ModuleType("torchao.quantization")
-    torchao_quantization.Float8WeightOnlyConfig = _FakeFloat8WeightOnlyConfig
-    monkeypatch.setitem(sys.modules, "diffusers", diffusers)
-    monkeypatch.setitem(sys.modules, "torchao", torchao)
-    monkeypatch.setitem(sys.modules, "torchao.quantization", torchao_quantization)
-
-
-def _patch_load_pipeline_dependencies(monkeypatch, fake_torch):
-    import runpod_worker.model_loading as model_loading
-
-    _clear_lora_env(monkeypatch)
-    _install_fake_fp8_modules(monkeypatch)
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-    monkeypatch.setattr(
-        model_loading,
-        "FluxFillPartialNoisePipeline",
-        _FakeQuantizedPipeline,
-    )
-    monkeypatch.setattr(
-        model_loading,
-        "resolve_model_load_target",
-        lambda model_id: ModelPathResolution(
-            load_target="/models/fake",
-            source="test",
-            local_files_only=True,
-        ),
-    )
-    _FakeQuantizedPipeline.captured_kwargs = None
 
 
 def _write_snapshot(root: Path, model_cache_name: str, snapshot_id: str) -> Path:
@@ -331,46 +227,6 @@ def test_lora_scale_changes_run_inside_inference_mode_on_warm_pipeline(monkeypat
     assert same_scale == {"mode": "cached_adapter_scale", "effective_scale": 1.0}
     assert changed_scale == {"mode": "set_adapters", "effective_scale": 0.5}
     assert [call["adapter_weights"] for call in pipe.adapter_calls] == [[1.0], [0.5]]
-
-
-def test_build_fp8_quantization_config_rejects_unsupported_gpu():
-    fake_torch = _FakeTorchForLoading(
-        _FakeCuda(capability=(8, 6), device_name="NVIDIA A40")
-    )
-
-    with pytest.raises(RuntimeError, match="compute capability 8.6"):
-        build_fp8_quantization_config(fake_torch)
-
-
-def test_load_pipeline_without_fp8_omits_quantization_config(monkeypatch):
-    _patch_load_pipeline_dependencies(monkeypatch, _FakeTorchForLoading())
-
-    loaded = load_pipeline(fp8=False)
-
-    assert loaded.fp8_enabled is False
-    assert loaded.model["fp8"]["requested"] is False
-    assert loaded.model["fp8_enabled"] is False
-    assert _FakeQuantizedPipeline.captured_kwargs is not None
-    assert "quantization_config" not in _FakeQuantizedPipeline.captured_kwargs
-
-
-def test_load_pipeline_with_fp8_builds_torchao_quantization_config(monkeypatch):
-    _patch_load_pipeline_dependencies(monkeypatch, _FakeTorchForLoading())
-
-    loaded = load_pipeline(fp8=True)
-
-    assert loaded.fp8_enabled is True
-    assert loaded.model["torch_dtype"] == "torch.bfloat16"
-    assert loaded.model["fp8"]["enabled"] is True
-    assert loaded.model["fp8"]["components"] == ["transformer", "text_encoder_2"]
-    assert _FakeQuantizedPipeline.captured_kwargs is not None
-    quantization_config = _FakeQuantizedPipeline.captured_kwargs["quantization_config"]
-    assert isinstance(quantization_config, _FakePipelineQuantizationConfig)
-    assert sorted(quantization_config.quant_mapping) == ["text_encoder_2", "transformer"]
-    assert all(
-        isinstance(config, _FakeTorchAoConfig)
-        for config in quantization_config.quant_mapping.values()
-    )
 
 
 def test_incomplete_remote_config_is_optional_or_required(monkeypatch, tmp_path):

@@ -40,7 +40,7 @@ def _worker_with_loaded_lora():
         pipe=pipe,
         torch=_FakeTorch(),
         torch_dtype="fake",
-        model={"model_id": "fake", "fp8_enabled": False},
+        model={"model_id": "fake"},
         lora={
             "loaded": True,
             "repo_id": "example/durer-lora",
@@ -78,22 +78,6 @@ def test_parse_request_settings_defaults_partial_noise_to_full_schedule():
     assert settings.guidance_scale == 30.0
     assert settings.num_inference_steps == 28
     assert settings.lora_scale == 1.0
-    assert settings.fp8 is False
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (True, True),
-        (False, False),
-        ("true", True),
-        ("false", False),
-    ],
-)
-def test_parse_request_settings_accepts_fp8_flag(value, expected):
-    settings = parse_request_settings({"prompt": "", "fp8": value})
-
-    assert settings.fp8 is expected
 
 
 def test_parse_request_settings_validates_prompt_presence():
@@ -134,8 +118,6 @@ def test_worker_reports_default_and_request_specific_lora_scales():
     assert default_response["lora"]["loaded"] is True
     assert default_response["lora"]["requested_scale"] == 1.0
     assert default_response["lora"]["effective_scale"] == 1.0
-    assert default_response["inference_settings"]["fp8"] is False
-    assert default_response["model"]["fp8_enabled"] is False
     assert half_response["lora"]["requested_scale"] == 0.5
     assert half_response["lora"]["effective_scale"] == 0.5
     assert zero_response["lora"]["requested_scale"] == 0.0
@@ -145,29 +127,3 @@ def test_worker_reports_default_and_request_specific_lora_scales():
         (["durer"], [0.5]),
         (["durer"], [0.0]),
     ]
-
-
-def test_worker_reloads_cached_pipeline_when_fp8_mode_changes(monkeypatch):
-    worker = FluxFillWorker()
-    load_calls = []
-
-    def fake_load_pipeline(*, reporter=None, fp8=False):
-        load_calls.append(fp8)
-        return LoadedPipeline(
-            pipe=_FakeInferencePipeline(),
-            torch=_FakeTorch(),
-            torch_dtype="fake",
-            model={"model_id": "fake", "fp8_enabled": fp8},
-            lora={"loaded": False},
-            supports_negative_prompt=False,
-            timings={},
-            fp8_enabled=fp8,
-        )
-
-    monkeypatch.setattr("runpod_worker.inference.load_pipeline", fake_load_pipeline)
-
-    assert worker.get_loaded(fp8=False).fp8_enabled is False
-    assert worker.get_loaded(fp8=False).fp8_enabled is False
-    assert worker.get_loaded(fp8=True).fp8_enabled is True
-
-    assert load_calls == [False, True]

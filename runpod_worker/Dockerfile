@@ -2,7 +2,6 @@ FROM pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_BREAK_SYSTEM_PACKAGES=1 \
     PYTHONPATH=/app \
     MODEL_ID=black-forest-labs/FLUX.1-Fill-dev \
     LORA_PATH=/app/runpod_worker/loras/pytorch_lora_weights.safetensors

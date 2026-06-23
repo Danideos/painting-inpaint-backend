@@ -8,6 +8,7 @@ import pytest
 
 from runpod_worker.model_loading import (
     load_lora_if_available,
+    normalize_model_id,
     resolve_hf_snapshot_path,
     resolve_lora_config,
     resolve_lora_path,
@@ -111,6 +112,21 @@ def _write_snapshot(root: Path, model_cache_name: str, snapshot_id: str) -> Path
     return snapshot
 
 
+def test_normalize_model_id_preserves_flux_fill_canonical_case():
+    assert (
+        normalize_model_id("black-forest-labs/flux.1-fill-dev")
+        == "black-forest-labs/FLUX.1-Fill-dev"
+    )
+    assert (
+        normalize_model_id("  black-forest-labs/FLUX.1-Fill-dev  ")
+        == "black-forest-labs/FLUX.1-Fill-dev"
+    )
+
+
+def test_normalize_model_id_preserves_unknown_model_ids():
+    assert normalize_model_id("example/My-Other-Model") == "example/My-Other-Model"
+
+
 def test_resolve_hf_snapshot_path_uses_refs_main(tmp_path):
     snapshot = _write_snapshot(
         tmp_path / "hub",
@@ -120,6 +136,21 @@ def test_resolve_hf_snapshot_path_uses_refs_main(tmp_path):
 
     resolved = resolve_hf_snapshot_path(
         "black-forest-labs/FLUX.1-Fill-dev",
+        cache_roots=[tmp_path / "hub"],
+    )
+
+    assert resolved == snapshot
+
+
+def test_resolve_hf_snapshot_path_accepts_lowercase_flux_fill_alias(tmp_path):
+    snapshot = _write_snapshot(
+        tmp_path / "hub",
+        "models--black-forest-labs--FLUX.1-Fill-dev",
+        "abc123",
+    )
+
+    resolved = resolve_hf_snapshot_path(
+        "black-forest-labs/flux.1-fill-dev",
         cache_roots=[tmp_path / "hub"],
     )
 

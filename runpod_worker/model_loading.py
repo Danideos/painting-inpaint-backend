@@ -78,6 +78,17 @@ def _env_value(name: str) -> str | None:
     return normalized or None
 
 
+def normalize_model_id(model_id: str | None = None) -> str:
+    """Normalize known model aliases while preserving arbitrary model ids."""
+
+    value = (model_id or DEFAULT_MODEL_ID).strip()
+    if not value:
+        return DEFAULT_MODEL_ID
+    if value.lower() == DEFAULT_MODEL_ID.lower():
+        return DEFAULT_MODEL_ID
+    return value
+
+
 def _repo_cache_name(model_id: str) -> str:
     return f"models--{model_id.replace('/', '--')}"
 
@@ -127,6 +138,7 @@ def resolve_hf_snapshot_path(
 ) -> Path | None:
     """Resolve a Hugging Face cache snapshot path without hardcoding a commit hash."""
 
+    model_id = normalize_model_id(model_id)
     repo_name = _repo_cache_name(model_id)
     for root in _candidate_cache_roots(cache_roots):
         candidates = [root] if root.name == repo_name else [root / repo_name]
@@ -149,6 +161,7 @@ def resolve_hf_snapshot_path(
 def resolve_model_load_target(model_id: str = DEFAULT_MODEL_ID) -> ModelPathResolution:
     """Resolve the preferred model path, allowing explicit opt-in HF downloads."""
 
+    model_id = normalize_model_id(model_id)
     started = time.perf_counter()
     snapshot_path = resolve_hf_snapshot_path(model_id)
     elapsed = time.perf_counter() - started
@@ -609,7 +622,7 @@ def load_pipeline(*, reporter: ProgressReporter | None = None) -> LoadedPipeline
 
     import torch
 
-    model_id = os.environ.get("MODEL_ID", DEFAULT_MODEL_ID)
+    model_id = normalize_model_id(os.environ.get("MODEL_ID", DEFAULT_MODEL_ID))
     if reporter is not None:
         reporter.emit(
             "model_load_start",

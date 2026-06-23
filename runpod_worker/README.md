@@ -102,6 +102,12 @@ Mask convention: white = inpaint/edit, black = preserve.
 normal full-strength FLUX Fill behavior. Lower values start later in the schedule and
 preserve more source structure.
 
+`fp8` is optional and defaults to `false`. Set `fp8=true` to request experimental
+torchao FP8 weight-only quantization for the FLUX transformer and second text encoder.
+The worker fails clearly if CUDA is unavailable, torchao quantization support is
+missing, or the GPU compute capability is below 8.9. For FP8 tests, use an Ada/Hopper
+GPU such as L40S, RTX 6000 Ada, or H100.
+
 ```json
 {
   "input": {
@@ -113,6 +119,7 @@ preserve more source structure.
     "num_inference_steps": 28,
     "seed": 123,
     "lora_scale": 1.0,
+    "fp8": false,
     "output_format": "png"
   }
 }

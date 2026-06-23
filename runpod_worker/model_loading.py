@@ -20,6 +20,8 @@ DEFAULT_MODEL_ID = "black-forest-labs/FLUX.1-Fill-dev"
 DEFAULT_LORA_PATH = "/app/runpod_worker/loras/pytorch_lora_weights.safetensors"
 DEFAULT_LORA_CACHE_DIR = "/tmp/painting-inpaint-lora-cache"
 DEFAULT_ADAPTER_NAME = "durer"
+MIN_FP8_COMPUTE_CAPABILITY = (8, 9)
+FP8_QUANTIZED_COMPONENTS = ("transformer", "text_encoder_2")
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,7 @@ class LoadedPipeline:
     lora: dict[str, Any]
     supports_negative_prompt: bool
     timings: dict[str, float]
+    fp8_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -599,7 +602,86 @@ def _pipeline_accepts(pipe: Any, parameter_name: str) -> bool:
     )
 
 
-def load_pipeline(*, reporter: ProgressReporter | None = None) -> LoadedPipeline:
+def _fp8_hardware_metadata(torch: Any) -> dict[str, Any]:
+    cuda = getattr(torch, "cuda", None)
+    metadata: dict[str, Any] = {
+        "cuda_available": False,
+        "min_compute_capability": ".".join(str(part) for part in MIN_FP8_COMPUTE_CAPABILITY),
+    }
+    if cuda is None:
+        return metadata
+    try:
+        metadata["cuda_available"] = bool(cuda.is_available())
+    except Exception:
+        metadata["cuda_available"] = False
+    if not metadata["cuda_available"]:
+        return metadata
+    try:
+        device_index = int(cuda.current_device())
+        metadata["cuda_device_index"] = device_index
+        if hasattr(cuda, "get_device_name"):
+            metadata["cuda_device_name"] = cuda.get_device_name(device_index)
+        capability = cuda.get_device_capability(device_index)
+        capability_tuple = tuple(int(part) for part in capability[:2])
+        metadata["compute_capability"] = ".".join(str(part) for part in capability_tuple)
+        metadata["compute_capability_tuple"] = list(capability_tuple)
+    except Exception as exc:
+        metadata["compute_capability_error"] = f"{type(exc).__name__}: {exc}"
+    return metadata
+
+
+def build_fp8_quantization_config(torch: Any) -> tuple[Any, dict[str, Any]]:
+    """Build the Diffusers torchao FP8 quantization config or fail clearly."""
+
+    metadata = _fp8_hardware_metadata(torch)
+    if not metadata["cuda_available"]:
+        raise RuntimeError("FP8 was requested, but CUDA is not available on this worker.")
+    capability_tuple = metadata.get("compute_capability_tuple")
+    if capability_tuple is None:
+        raise RuntimeError(
+            "FP8 was requested, but the worker could not determine the CUDA compute "
+            f"capability. Details: {metadata.get('compute_capability_error')}"
+        )
+    if tuple(capability_tuple) < MIN_FP8_COMPUTE_CAPABILITY:
+        device_name = metadata.get("cuda_device_name", "unknown GPU")
+        raise RuntimeError(
+            "FP8 was requested, but this worker GPU is not supported for torchao FP8. "
+            f"Detected {device_name} with compute capability {metadata.get('compute_capability')}; "
+            f"requires >= {metadata['min_compute_capability']}."
+        )
+
+    try:
+        from diffusers import PipelineQuantizationConfig, TorchAoConfig
+        from torchao.quantization import Float8WeightOnlyConfig
+    except Exception as exc:
+        raise RuntimeError(
+            "FP8 was requested, but Diffusers torchao quantization support is not "
+            "available. Ensure diffusers exposes PipelineQuantizationConfig and "
+            "TorchAoConfig, and torchao is installed."
+        ) from exc
+
+    quantization_config = PipelineQuantizationConfig(
+        quant_mapping={
+            component: TorchAoConfig(Float8WeightOnlyConfig())
+            for component in FP8_QUANTIZED_COMPONENTS
+        }
+    )
+    metadata.update(
+        {
+            "enabled": True,
+            "backend": "torchao",
+            "quantization_type": "Float8WeightOnlyConfig",
+            "components": list(FP8_QUANTIZED_COMPONENTS),
+        }
+    )
+    return quantization_config, metadata
+
+
+def load_pipeline(
+    *,
+    reporter: ProgressReporter | None = None,
+    fp8: bool = False,
+) -> LoadedPipeline:
     """Load the FLUX Fill pipeline, optional LoRA, and performance settings."""
 
     if not hasattr(FluxFillPartialNoisePipeline, "from_pretrained"):
@@ -615,19 +697,28 @@ def load_pipeline(*, reporter: ProgressReporter | None = None) -> LoadedPipeline
             "model_load_start",
             stage="model",
             message="Loading FLUX Fill pipeline.",
-            metadata={"model_id": model_id},
+            metadata={"model_id": model_id, "fp8_requested": bool(fp8)},
         )
     timings: dict[str, float] = {}
     resolve_started = time.perf_counter()
     resolution = resolve_model_load_target(model_id)
     timings["model_path_discovery_seconds"] = time.perf_counter() - resolve_started
 
-    torch_dtype = resolve_torch_dtype(torch)
+    fp8_metadata: dict[str, Any] = {
+        "requested": bool(fp8),
+        "enabled": False,
+        "min_compute_capability": ".".join(str(part) for part in MIN_FP8_COMPUTE_CAPABILITY),
+    }
+    torch_dtype = torch.bfloat16 if fp8 else resolve_torch_dtype(torch)
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
     kwargs: dict[str, Any] = {
         "torch_dtype": torch_dtype,
         "local_files_only": resolution.local_files_only,
     }
+    if fp8:
+        quantization_config, fp8_metadata = build_fp8_quantization_config(torch)
+        fp8_metadata["requested"] = True
+        kwargs["quantization_config"] = quantization_config
     if token:
         kwargs["token"] = token
 
@@ -663,6 +754,8 @@ def load_pipeline(*, reporter: ProgressReporter | None = None) -> LoadedPipeline
         "torch_dtype": str(torch_dtype),
         "device_mode": device_mode,
         "pipeline_class": type(pipe).__name__,
+        "fp8": fp8_metadata,
+        "fp8_enabled": bool(fp8_metadata.get("enabled")),
     }
     if reporter is not None:
         reporter.emit(
@@ -682,4 +775,5 @@ def load_pipeline(*, reporter: ProgressReporter | None = None) -> LoadedPipeline
         lora=lora,
         supports_negative_prompt=_pipeline_accepts(pipe, "negative_prompt"),
         timings=timings,
+        fp8_enabled=bool(fp8_metadata.get("enabled")),
     )

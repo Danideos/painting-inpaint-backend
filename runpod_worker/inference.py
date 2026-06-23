@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 import traceback
+import gc
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -198,6 +199,7 @@ class RequestSettings:
     lora_scale: float
     output_format: str
     max_sequence_length: int
+    fp8: bool
 
 
 def _optional_float(payload: dict[str, Any], key: str, default: float) -> float:
@@ -258,6 +260,7 @@ def parse_request_settings(payload: dict[str, Any]) -> RequestSettings:
         output_format = normalize_output_format(payload.get("output_format", "png"))
     except ValueError as exc:
         raise WorkerInputError(str(exc)) from exc
+    fp8 = _payload_flag(payload, "fp8", default=False)
 
     return RequestSettings(
         prompt=prompt,
@@ -269,6 +272,7 @@ def parse_request_settings(payload: dict[str, Any]) -> RequestSettings:
         lora_scale=lora_scale,
         output_format=output_format,
         max_sequence_length=max_sequence_length,
+        fp8=fp8,
     )
 
 
@@ -311,10 +315,37 @@ class FluxFillWorker:
     def loaded(self) -> LoadedPipeline:
         return self.get_loaded()
 
-    def get_loaded(self, *, reporter: ProgressReporter | None = None) -> LoadedPipeline:
+    def get_loaded(
+        self,
+        *,
+        reporter: ProgressReporter | None = None,
+        fp8: bool = False,
+    ) -> LoadedPipeline:
+        if self._loaded is not None and self._loaded.fp8_enabled != bool(fp8):
+            if reporter is not None:
+                reporter.emit(
+                    "model_load_start",
+                    stage="model",
+                    message="Reloading FLUX Fill pipeline for requested precision mode.",
+                    metadata={
+                        "cached": True,
+                        "cached_fp8_enabled": self._loaded.fp8_enabled,
+                        "requested_fp8": bool(fp8),
+                    },
+                )
+            old_loaded = self._loaded
+            self._loaded = None
+            try:
+                cuda = getattr(old_loaded.torch, "cuda", None)
+                if cuda is not None and cuda.is_available() and hasattr(cuda, "empty_cache"):
+                    cuda.empty_cache()
+            except Exception:
+                pass
+            del old_loaded
+            gc.collect()
         if self._loaded is None:
             started = time.perf_counter()
-            self._loaded = load_pipeline(reporter=reporter)
+            self._loaded = load_pipeline(reporter=reporter, fp8=bool(fp8))
             LOGGER.info("Pipeline ready in %.3fs", time.perf_counter() - started)
         elif reporter is not None:
             reporter.emit(
@@ -331,6 +362,8 @@ class FluxFillWorker:
                     "cached": True,
                     "model": self._loaded.model,
                     "lora_loaded": bool(self._loaded.lora.get("loaded")),
+                    "fp8_requested": bool(fp8),
+                    "fp8_enabled": self._loaded.fp8_enabled,
                 },
             )
         return self._loaded
@@ -371,7 +404,7 @@ class FluxFillWorker:
                 "mask_coverage": mask_fraction,
             },
         )
-        loaded = self.get_loaded(reporter=reporter)
+        loaded = self.get_loaded(reporter=reporter, fp8=settings.fp8)
         pipe = loaded.pipe
         torch = loaded.torch
 
@@ -447,6 +480,7 @@ class FluxFillWorker:
                     "partial_noise": settings.partial_noise,
                     "guidance_scale": settings.guidance_scale,
                     "seed": settings.seed,
+                    "fp8": settings.fp8,
                 },
             )
             inference_started = time.perf_counter()
@@ -541,6 +575,7 @@ class FluxFillWorker:
                 "max_sequence_length": settings.max_sequence_length,
                 "seed": settings.seed,
                 "mask_coverage": mask_coverage(mask),
+                "fp8": settings.fp8,
             },
             "schedule_debug": schedule_debug,
             "latent_init_debug": latent_debug,

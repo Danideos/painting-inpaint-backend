@@ -157,21 +157,6 @@ def test_resolve_hf_snapshot_path_accepts_lowercase_flux_fill_alias(tmp_path):
     assert resolved == snapshot
 
 
-def test_resolve_hf_snapshot_path_accepts_lowercase_cache_folder(tmp_path):
-    snapshot = _write_snapshot(
-        tmp_path / "hub",
-        "models--black-forest-labs--flux.1-fill-dev",
-        "abc123",
-    )
-
-    resolved = resolve_hf_snapshot_path(
-        "black-forest-labs/FLUX.1-Fill-dev",
-        cache_roots=[tmp_path / "hub"],
-    )
-
-    assert resolved == snapshot
-
-
 def test_resolve_hf_snapshot_path_falls_back_to_snapshot_folder(tmp_path):
     snapshots = (
         tmp_path

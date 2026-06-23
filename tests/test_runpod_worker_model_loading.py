@@ -431,4 +431,5 @@ def test_docker_base_and_torchao_pin_support_fp8():
     requirements = Path("runpod_worker/requirements.txt").read_text(encoding="utf-8")
 
     assert "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime" in dockerfile
+    assert "PIP_BREAK_SYSTEM_PACKAGES=1" in dockerfile
     assert "torchao>=0.17,<0.18" in requirements

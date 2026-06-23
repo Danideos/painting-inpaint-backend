@@ -108,6 +108,12 @@ The worker fails clearly if CUDA is unavailable, torchao quantization support is
 missing, or the GPU compute capability is below 8.9. For FP8 tests, use an Ada/Hopper
 GPU such as L40S, RTX 6000 Ada, or H100.
 
+The Docker image uses a PyTorch CUDA 12.8 base and `torchao>=0.17` so Diffusers'
+torchao integration accepts the quantization backend. Older PyTorch 2.5 CUDA 12.4
+images do not support Blackwell `sm_120` GPUs, and older torchao releases are rejected
+by Diffusers. Avoid small 24GB MIG slices for FLUX unless you are intentionally testing
+memory limits.
+
 ```json
 {
   "input": {

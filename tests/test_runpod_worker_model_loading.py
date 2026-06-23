@@ -424,3 +424,11 @@ def test_dockerignore_excludes_lora_safetensors_by_default():
 
     assert "**/*.safetensors" in dockerignore
     assert "!runpod_worker/loras/*.safetensors" not in dockerignore
+
+
+def test_docker_base_and_torchao_pin_support_fp8():
+    dockerfile = Path("runpod_worker/Dockerfile").read_text(encoding="utf-8")
+    requirements = Path("runpod_worker/requirements.txt").read_text(encoding="utf-8")
+
+    assert "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime" in dockerfile
+    assert "torchao>=0.17,<0.18" in requirements

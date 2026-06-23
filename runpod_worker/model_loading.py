@@ -93,6 +93,46 @@ def _repo_cache_name(model_id: str) -> str:
     return f"models--{model_id.replace('/', '--')}"
 
 
+def _case_insensitive_child_dir(root: Path, child_name: str) -> Path | None:
+    if not root.exists() or not root.is_dir():
+        return None
+    try:
+        for child in root.iterdir():
+            if child.is_dir() and child.name.casefold() == child_name.casefold():
+                return child
+    except OSError:
+        return None
+    return None
+
+
+def _candidate_repo_dirs(root: Path, repo_name: str) -> list[Path]:
+    candidates: list[Path] = []
+
+    if root.name.casefold() == repo_name.casefold():
+        candidates.append(root)
+    else:
+        candidates.append(root / repo_name)
+        case_insensitive = _case_insensitive_child_dir(root, repo_name)
+        if case_insensitive is not None:
+            candidates.append(case_insensitive)
+
+    if root.name.casefold() != "hub":
+        hub_root = root / "hub"
+        candidates.append(hub_root / repo_name)
+        case_insensitive = _case_insensitive_child_dir(hub_root, repo_name)
+        if case_insensitive is not None:
+            candidates.append(case_insensitive)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return deduped
+
+
 def _candidate_cache_roots(extra_roots: list[str | Path] | None = None) -> list[Path]:
     roots: list[Path] = []
     if extra_roots:
@@ -141,10 +181,7 @@ def resolve_hf_snapshot_path(
     model_id = normalize_model_id(model_id)
     repo_name = _repo_cache_name(model_id)
     for root in _candidate_cache_roots(cache_roots):
-        candidates = [root] if root.name == repo_name else [root / repo_name]
-        if root.name != "hub":
-            candidates.append(root / "hub" / repo_name)
-        for repo_dir in candidates:
+        for repo_dir in _candidate_repo_dirs(root, repo_name):
             if not repo_dir.exists() or not repo_dir.is_dir():
                 continue
             ref_snapshot = _snapshot_from_ref(repo_dir)

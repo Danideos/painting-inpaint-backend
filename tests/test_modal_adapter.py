@@ -151,3 +151,17 @@ def test_modal_adapter_exposes_streaming_http_contract():
         ROOT / "src" / "painting_inpaint_backend" / "modal" / "config.py"
     ).read_text(encoding="utf-8")
     assert "min_containers" not in source
+
+
+def test_backend_package_initializers_do_not_eagerly_import_inference():
+    root_source = (ROOT / "src" / "painting_inpaint_backend" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    core_source = (
+        ROOT / "src" / "painting_inpaint_backend" / "core" / "__init__.py"
+    ).read_text(encoding="utf-8")
+
+    assert "if TYPE_CHECKING:" in root_source
+    assert "if TYPE_CHECKING:" in core_source
+    assert "def __getattr__" in root_source
+    assert "def __getattr__" in core_source

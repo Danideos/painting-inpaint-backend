@@ -18,6 +18,9 @@ build/
 .tmp/
 data/
 runpod_runs/
+local_runs/
+generated/
+outputs/
 runs/
 runs_test/
 models/
@@ -25,6 +28,9 @@ hf_cache/
 thesis/
 notebooks/
 docs/experiments/
+tests/
+scripts/
+examples/
 runpod_smoke_payload.json
 runpod_response.json
 runpod_smoke_output.png

@@ -1,13 +1,9 @@
-"""Inference orchestration for the FLUX Fill RunPod worker."""
+"""Provider-neutral FLUX Fill inference orchestration."""
 
 from __future__ import annotations
 
 import logging
-import queue
-import threading
 import time
-import traceback
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -30,7 +26,6 @@ from .progress import ProgressReporter
 LOGGER = logging.getLogger(__name__)
 
 DIFFUSERS_STRENGTH_FOR_CALL = 1.0
-_STREAM_DONE = object()
 
 
 class WorkerInputError(ValueError):
@@ -56,8 +51,7 @@ def _pipeline_accepts_argument(pipe: Any, parameter_name: str) -> bool:
     if parameter_name in signature.parameters:
         return True
     return any(
-        param.kind is inspect.Parameter.VAR_KEYWORD
-        for param in signature.parameters.values()
+        param.kind is inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()
     )
 
 
@@ -295,14 +289,12 @@ def load_request_images(payload: dict[str, Any]) -> tuple[Image.Image, Image.Ima
     try:
         ensure_same_size([image, mask])
     except ValueError as exc:
-        raise WorkerInputError(
-            f"image and mask must have identical dimensions. {exc}"
-        ) from exc
+        raise WorkerInputError(f"image and mask must have identical dimensions. {exc}") from exc
     return image.convert("RGB"), binarize_mask(mask)
 
 
-class FluxFillWorker:
-    """Lazy-loading worker service reused across warm RunPod jobs."""
+class InferenceService:
+    """Lazy-loading FLUX Fill service reused across provider requests."""
 
     def __init__(self) -> None:
         self._loaded: LoadedPipeline | None = None
@@ -388,9 +380,7 @@ class FluxFillWorker:
         )
         lora_scale_result = set_lora_scale(
             pipe,
-            adapter_name=(
-                loaded.lora.get("adapter_name") if loaded.lora.get("loaded") else None
-            ),
+            adapter_name=(loaded.lora.get("adapter_name") if loaded.lora.get("loaded") else None),
             lora_scale=settings.lora_scale,
         )
         reporter.emit(
@@ -549,90 +539,3 @@ class FluxFillWorker:
         if include_progress_history:
             output["run_report"] = {"progress_events": reporter.history}
         return output
-
-
-_WORKER = FluxFillWorker()
-
-
-def run_job_input(payload: dict[str, Any]) -> dict[str, Any]:
-    """Run one validated RunPod input payload."""
-
-    if not isinstance(payload, dict):
-        raise WorkerInputError("RunPod job input must be a JSON object.")
-    include_progress_history = _payload_flag(
-        payload,
-        "include_progress_history",
-        default=False,
-    )
-    reporter = ProgressReporter(
-        enabled=include_progress_history,
-        keep_history=include_progress_history,
-    )
-    if include_progress_history:
-        reporter.emit(
-            "job_received",
-            stage="input",
-            message="RunPod job received.",
-            metadata={"stream_progress": False},
-        )
-    return _WORKER.run(payload, reporter=reporter)
-
-
-def run_job_input_streaming(
-    payload: dict[str, Any],
-    *,
-    job_id: str | None = None,
-    worker: FluxFillWorker | None = None,
-) -> Iterator[dict[str, Any]]:
-    """Run one RunPod input payload and yield progress events as they happen."""
-
-    events: queue.Queue[dict[str, Any] | object] = queue.Queue()
-    reporter = ProgressReporter(
-        job_id=job_id,
-        enabled=True,
-        keep_history=True,
-        on_event=events.put,
-    )
-    service = worker or _WORKER
-
-    def _run() -> None:
-        try:
-            if not isinstance(payload, dict):
-                raise WorkerInputError("RunPod job input must be a JSON object.")
-            reporter.emit(
-                "job_received",
-                stage="input",
-                message="RunPod job received.",
-                metadata={"stream_progress": True},
-            )
-            output = service.run(payload, reporter=reporter)
-            reporter.final(
-                output=output,
-                message="RunPod job completed.",
-                metadata={
-                    "output_format": output.get("output_format"),
-                    "width": output.get("width"),
-                    "height": output.get("height"),
-                },
-            )
-        except Exception as exc:
-            reporter.error(
-                message=str(exc),
-                metadata={
-                    "error_type": type(exc).__name__,
-                    "traceback": traceback.format_exc(limit=5),
-                },
-            )
-        finally:
-            events.put(_STREAM_DONE)
-
-    thread = threading.Thread(target=_run, name="runpod-progress-worker", daemon=True)
-    thread.start()
-    try:
-        while True:
-            event = events.get()
-            if event is _STREAM_DONE:
-                break
-            yield event
-    finally:
-        thread.join()

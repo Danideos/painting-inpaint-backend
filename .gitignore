@@ -20,6 +20,9 @@ htmlcov/
 
 # Generated/local payloads and runs
 runpod_runs/
+local_runs/
+generated/
+outputs/
 runpod_smoke_payload.json
 runpod_response.json
 runpod_smoke_output.png

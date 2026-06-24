@@ -177,7 +177,7 @@ def image_from_url(value: str, *, label: str, timeout: float | None = None) -> I
 
     if not isinstance(value, str) or not value.strip():
         raise ImageInputError(f"{label} URL input must be a non-empty string.")
-    request = Request(value.strip(), headers={"User-Agent": "painting-inpaint-runpod-worker/1.0"})
+    request = Request(value.strip(), headers={"User-Agent": "painting-inpaint-backend/1.0"})
     timeout = image_download_timeout_seconds() if timeout is None else timeout
     limit = max_download_bytes()
     try:

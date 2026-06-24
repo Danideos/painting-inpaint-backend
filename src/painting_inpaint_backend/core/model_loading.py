@@ -1,4 +1,4 @@
-"""Model, cache, and LoRA loading for the RunPod FLUX Fill worker."""
+"""Provider-neutral model, cache, and LoRA loading."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from .progress import ProgressReporter
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MODEL_ID = "black-forest-labs/FLUX.1-Fill-dev"
-DEFAULT_LORA_PATH = "/app/runpod_worker/loras/pytorch_lora_weights.safetensors"
+DEFAULT_LORA_PATH = "/app/assets/loras/pytorch_lora_weights.safetensors"
 DEFAULT_LORA_CACHE_DIR = "/tmp/painting-inpaint-lora-cache"
 DEFAULT_ADAPTER_NAME = "durer"
 
@@ -196,9 +196,24 @@ def resolve_hf_snapshot_path(
 
 
 def resolve_model_load_target(model_id: str = DEFAULT_MODEL_ID) -> ModelPathResolution:
-    """Resolve the preferred model path, allowing explicit opt-in HF downloads."""
+    """Resolve an explicit local model, cache snapshot, or opt-in download."""
 
     model_id = normalize_model_id(model_id)
+    explicit_model_path = _env_value("MODEL_PATH")
+    if explicit_model_path is not None:
+        model_path = Path(explicit_model_path).expanduser()
+        if not model_path.exists() or not model_path.is_dir():
+            raise FileNotFoundError(
+                "MODEL_PATH must point to an existing local model directory. "
+                f"Configured path: {model_path}"
+            )
+        return ModelPathResolution(
+            load_target=str(model_path),
+            source="explicit_local_path",
+            local_files_only=True,
+            snapshot_path=str(model_path),
+        )
+
     started = time.perf_counter()
     snapshot_path = resolve_hf_snapshot_path(model_id)
     elapsed = time.perf_counter() - started
@@ -219,8 +234,8 @@ def resolve_model_load_target(model_id: str = DEFAULT_MODEL_ID) -> ModelPathReso
         )
     raise FileNotFoundError(
         "Missing cached Hugging Face model for "
-        f"{model_id!r}. Configure the RunPod endpoint Hugging Face model cache for this "
-        "model, or set ALLOW_HF_DOWNLOAD=1 to permit a gated Hugging Face download."
+        f"{model_id!r}. Set MODEL_PATH to a local model directory, configure a Hugging "
+        "Face model cache, or set ALLOW_HF_DOWNLOAD=1 to permit a gated download."
     )
 
 
@@ -255,8 +270,7 @@ def resolve_lora_path(
     if required:
         raise FileNotFoundError(
             "LoRA is required because LORA_REQUIRED=1, but no weights file was found. "
-            f"Searched: {configured}. Set LORA_PATH or bake the LoRA into "
-            "runpod_worker/loras/ before building the image."
+            f"Searched: {configured}. Set LORA_PATH to a local file or directory."
         )
     return None
 

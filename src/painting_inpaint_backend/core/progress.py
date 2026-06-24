@@ -1,4 +1,4 @@
-"""Structured progress events for the RunPod worker."""
+"""Structured provider-neutral progress events."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def _normalize_progress(progress: Mapping[str, Any] | None) -> dict[str, Any] | 
 
 
 class ProgressReporter:
-    """Emit sanitized worker progress events to logs, history, and stream sinks."""
+    """Emit sanitized progress events to logs, history, and stream sinks."""
 
     def __init__(
         self,

@@ -8,7 +8,8 @@ import traceback
 from collections.abc import Iterator
 from typing import Any
 
-from .inference import WorkerInputError, run_job_input, run_job_input_streaming
+from ..core.inference import WorkerInputError
+from .service import run_job_input, run_job_input_streaming
 
 try:
     import runpod

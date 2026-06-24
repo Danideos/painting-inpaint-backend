@@ -6,12 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from runpod_worker.model_loading import (
+from painting_inpaint_backend.core.model_loading import (
     load_lora_if_available,
     normalize_model_id,
     resolve_hf_snapshot_path,
     resolve_lora_config,
     resolve_lora_path,
+    resolve_model_load_target,
     set_lora_scale,
 )
 
@@ -192,6 +193,27 @@ def test_resolve_hf_snapshot_path_falls_back_to_snapshot_folder(tmp_path):
     assert resolved in {older, newer}
 
 
+def test_model_path_uses_explicit_local_directory(monkeypatch, tmp_path):
+    model_path = tmp_path / "flux-fill"
+    model_path.mkdir()
+    monkeypatch.setenv("MODEL_PATH", str(model_path))
+
+    resolution = resolve_model_load_target()
+
+    assert resolution.load_target == str(model_path)
+    assert resolution.source == "explicit_local_path"
+    assert resolution.local_files_only is True
+    assert resolution.snapshot_path == str(model_path)
+
+
+def test_model_path_rejects_missing_explicit_directory(monkeypatch, tmp_path):
+    missing_path = tmp_path / "missing"
+    monkeypatch.setenv("MODEL_PATH", str(missing_path))
+
+    with pytest.raises(FileNotFoundError, match="MODEL_PATH"):
+        resolve_model_load_target()
+
+
 def test_lora_path_is_optional_for_smoke_tests(tmp_path):
     assert resolve_lora_path(lora_path=tmp_path / "missing.safetensors", required=False) is None
 
@@ -325,4 +347,4 @@ def test_dockerignore_excludes_lora_safetensors_by_default():
     dockerignore = Path(".dockerignore").read_text(encoding="utf-8")
 
     assert "**/*.safetensors" in dockerignore
-    assert "!runpod_worker/loras/*.safetensors" not in dockerignore
+    assert "!assets/loras/*.safetensors" not in dockerignore

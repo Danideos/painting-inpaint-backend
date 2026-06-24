@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from runpod_worker.partial_noise import (
+from painting_inpaint_backend.core.partial_noise import (
     FluxFillPartialNoisePipeline,
     normalize_partial_noise,
     partial_noise_start_index,

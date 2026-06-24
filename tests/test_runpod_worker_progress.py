@@ -8,10 +8,11 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from runpod_worker.image_io import image_to_base64
-from runpod_worker.inference import FluxFillWorker, run_job_input_streaming
-from runpod_worker.model_loading import LoadedPipeline
-from runpod_worker.progress import ProgressReporter, sanitize_for_progress
+from painting_inpaint_backend.core.image_io import image_to_base64
+from painting_inpaint_backend.core.inference import InferenceService
+from painting_inpaint_backend.core.model_loading import LoadedPipeline
+from painting_inpaint_backend.core.progress import ProgressReporter, sanitize_for_progress
+from painting_inpaint_backend.runpod.service import run_job_input_streaming
 
 
 class _FakeTorch:
@@ -40,8 +41,8 @@ class _StepCallbackPipeline:
         return SimpleNamespace(images=[Image.new("RGB", image.size, "blue")])
 
 
-def _worker_with_fake_pipeline() -> FluxFillWorker:
-    worker = FluxFillWorker()
+def _worker_with_fake_pipeline() -> InferenceService:
+    worker = InferenceService()
     worker._loaded = LoadedPipeline(
         pipe=_StepCallbackPipeline(),
         torch=_FakeTorch(),
@@ -120,7 +121,7 @@ def test_streaming_worker_yields_progress_and_final_event():
         run_job_input_streaming(
             _payload(),
             job_id="job-1",
-            worker=_worker_with_fake_pipeline(),
+            service=_worker_with_fake_pipeline(),
         )
     )
 

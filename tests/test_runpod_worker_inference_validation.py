@@ -6,14 +6,14 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-from runpod_worker.image_io import image_to_base64
-from runpod_worker.inference import (
-    FluxFillWorker,
+from painting_inpaint_backend.core.image_io import image_to_base64
+from painting_inpaint_backend.core.inference import (
+    InferenceService,
     WorkerInputError,
     load_request_images,
     parse_request_settings,
 )
-from runpod_worker.model_loading import LoadedPipeline
+from painting_inpaint_backend.core.model_loading import LoadedPipeline
 
 
 class _FakeTorch:
@@ -35,7 +35,7 @@ class _FakeInferencePipeline:
 
 def _worker_with_loaded_lora():
     pipe = _FakeInferencePipeline()
-    worker = FluxFillWorker()
+    worker = InferenceService()
     worker._loaded = LoadedPipeline(
         pipe=pipe,
         torch=_FakeTorch(),

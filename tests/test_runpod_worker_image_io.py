@@ -5,8 +5,8 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-import runpod_worker.image_io as image_io
-from runpod_worker.image_io import (
+import painting_inpaint_backend.core.image_io as image_io
+from painting_inpaint_backend.core.image_io import (
     ImageInputError,
     image_from_url,
     image_to_base64,

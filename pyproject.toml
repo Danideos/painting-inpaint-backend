@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "painting-inpaint-backend"
+version = "0.1.0"
+description = "Shared FLUX Fill inference backend for RunPod and Modal."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "huggingface-hub>=0.34,<1",
+    "numpy>=1.26,<3",
+    "pillow>=10,<12",
+]
+
+[project.optional-dependencies]
+inference = [
+    "accelerate>=1.0,<2",
+    "diffusers>=0.37.1,<0.39",
+    "peft>=0.17,<0.20",
+    "protobuf>=4,<7",
+    "safetensors>=0.4,<0.8",
+    "sentencepiece>=0.2,<0.3",
+    "torch>=2.5,<2.6",
+    "transformers>=4.56,<5",
+]
+runpod = ["runpod>=1.7,<2"]
+modal = ["modal>=1.5,<2"]
+
+[dependency-groups]
+dev = [
+    "build>=1.2,<2",
+    "modal>=1.5,<2",
+    "pytest>=8,<9",
+    "ruff>=0.12,<1",
+    "runpod>=1.7,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/painting_inpaint_backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

@@ -100,6 +100,43 @@ Modal loads the same package from the pinned registry image with `include_source
 Inference sets `MODEL_PATH`, `LORA_PATH`, and the Hugging Face offline flags, so request
 handling cannot download weights. Responses cross the Modal boundary as JSON strings.
 
+### Modal HTTP API
+
+The colleague-facing client uses an authenticated NDJSON endpoint while direct Modal
+invocation remains available for backend smoke tests. Create a dedicated API secret;
+this key grants access only to this restoration endpoint and is not a Modal workspace
+credential:
+
+```powershell
+$keyBytes = New-Object byte[] 32
+[Security.Cryptography.RandomNumberGenerator]::Fill($keyBytes)
+$restorationKey = [Convert]::ToBase64String($keyBytes)
+uv run modal secret create --force painting-inpaint-restoration-api `
+  "RESTORATION_API_KEY=$restorationKey"
+```
+
+Deploy with the same immutable image that contains the Modal generator method:
+
+```powershell
+$env:PAINTING_INPAINT_BACKEND_IMAGE = `
+  "ghcr.io/danideos/painting-inpaint-backend:<full-commit-sha>"
+uv run modal deploy -m painting_inpaint_backend.modal.app
+```
+
+The ASGI deployment exposes:
+
+```text
+POST /v1/restore/stream
+Authorization: Bearer <RESTORATION_API_KEY>
+Content-Type: application/json
+Accept: application/x-ndjson
+```
+
+The request body is the provider-neutral restoration input without a RunPod `input`
+wrapper. The response starts with `modal_queued`, streams the same structured model and
+inference events as RunPod, and ends with `job_done` containing the normal output.
+Blank lines are connection heartbeats and do not represent progress.
+
 ## LoRA
 
 RunPod may download the LoRA from Hugging Face or use `LORA_PATH`. Modal points

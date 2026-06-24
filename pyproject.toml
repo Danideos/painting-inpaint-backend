@@ -26,7 +26,10 @@ inference = [
     "transformers>=4.56,<5",
 ]
 runpod = ["runpod>=1.7,<2"]
-modal = ["modal>=1.5,<2"]
+modal = [
+    "fastapi>=0.115,<1",
+    "modal>=1.5,<2",
+]
 
 [dependency-groups]
 dev = [

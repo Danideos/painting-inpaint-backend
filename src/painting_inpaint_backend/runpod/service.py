@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import queue
-import threading
-import traceback
 from collections.abc import Iterator
 from typing import Any
 
 from ..core.inference import InferenceService, WorkerInputError, _payload_flag
 from ..core.progress import ProgressReporter
+from ..core.streaming import stream_inference_events
 
-_STREAM_DONE = object()
 _SERVICE = InferenceService()
 
 
@@ -47,53 +44,12 @@ def run_job_input_streaming(
 ) -> Iterator[dict[str, Any]]:
     """Run one RunPod input payload and yield progress events as they happen."""
 
-    events: queue.Queue[dict[str, Any] | object] = queue.Queue()
-    reporter = ProgressReporter(
+    yield from stream_inference_events(
+        payload,
+        service=service or _SERVICE,
         job_id=job_id,
-        enabled=True,
-        keep_history=True,
-        on_event=events.put,
+        provider="runpod",
+        received_message="RunPod job received.",
+        completion_message="RunPod job completed.",
+        received_metadata={"stream_progress": True},
     )
-    inference_service = service or _SERVICE
-
-    def _run() -> None:
-        try:
-            if not isinstance(payload, dict):
-                raise WorkerInputError("RunPod job input must be a JSON object.")
-            reporter.emit(
-                "job_received",
-                stage="input",
-                message="RunPod job received.",
-                metadata={"stream_progress": True},
-            )
-            output = inference_service.run(payload, reporter=reporter)
-            reporter.final(
-                output=output,
-                message="RunPod job completed.",
-                metadata={
-                    "output_format": output.get("output_format"),
-                    "width": output.get("width"),
-                    "height": output.get("height"),
-                },
-            )
-        except Exception as exc:
-            reporter.error(
-                message=str(exc),
-                metadata={
-                    "error_type": type(exc).__name__,
-                    "traceback": traceback.format_exc(limit=5),
-                },
-            )
-        finally:
-            events.put(_STREAM_DONE)
-
-    thread = threading.Thread(target=_run, name="runpod-progress-worker", daemon=True)
-    thread.start()
-    try:
-        while True:
-            event = events.get()
-            if event is _STREAM_DONE:
-                break
-            yield event
-    finally:
-        thread.join()

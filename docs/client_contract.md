@@ -77,18 +77,31 @@ RunPod-specific behavior includes `/run`, `/status`, `/stream`, job IDs, queue
 states, aggregate streaming events, and status values such as `IN_QUEUE`,
 `COMPLETED`, `FAILED`, `CANCELLED`, and `TIMED_OUT`.
 
-Modal should not imitate these internals unless future client compatibility
-requires it. The first Modal spike uses direct function invocation with the
-provider-neutral inner request.
+## Modal HTTP Transport
+
+Modal accepts the provider-neutral inner request directly at:
+
+```text
+POST /v1/restore/stream
+Authorization: Bearer <dedicated restoration API key>
+Accept: application/x-ndjson
+```
+
+The endpoint emits one JSON event per line. It begins with `modal_queued`, forwards the
+shared backend progress events, and terminates with either `job_done` containing the
+normal provider-neutral output or `job_failed`. Blank lines are heartbeats and clients
+must ignore them.
+
+Modal deliberately does not imitate RunPod's detached `/run`, `/status`, and `/cancel`
+queue API. The first client integration supports the high-level blocking restore with
+live progress over one HTTP connection.
 
 ## Future Compatibility Recommendation
 
-Keep `RestorationClient` as the stable public API. Add a transport/provider layer
-later:
+`RestorationClient` remains the stable public API with separate transports:
 
 - `RunPodTransport`: current queue/status/stream behavior.
-- `ModalTransport`: direct Modal invocation or HTTP endpoint behavior.
+- `ModalTransport`: authenticated streaming HTTP behavior.
 
 The public result object can remain unchanged if Modal returns the provider-neutral
 response shape above.
-

@@ -51,3 +51,16 @@ and subsequent workflows publish only `painting-inpaint-backend`; historical
 - Observed wall time was 436.4 seconds; worker inference was 79.853 seconds.
 - The long delay occurred before worker progress and is attributable to scheduling/cold
   allocation rather than inference execution.
+
+## Modal Client Rollout
+
+The Modal HTTP deployment must reference an immutable backend image containing both the
+shared stream engine and `FluxFillModalBackend.restore_stream`. Create the Modal Secret
+`painting-inpaint-restoration-api` with key `RESTORATION_API_KEY`, deploy the app, and
+give applications only the resulting endpoint URL and dedicated restoration key.
+
+Acceptance requires a real remote-client request to report queued, preprocessing,
+model preparation, inference steps, postprocessing, and completion. The result must
+still show L40S, explicit Volume model and LoRA paths, offline loading, and exact
+outside-mask preservation. RunPod remains on its current image until its regression
+smoke against the new shared stream code passes.

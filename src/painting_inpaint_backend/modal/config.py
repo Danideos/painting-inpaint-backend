@@ -9,6 +9,10 @@ from pathlib import PurePosixPath
 APP_NAME = "painting-inpaint-backend-modal"
 VOLUME_NAME = "flux-fill-models"
 HF_SECRET_NAME = "huggingface-secret"
+API_SECRET_NAME = "painting-inpaint-restoration-api"
+API_SECRET_KEY = "RESTORATION_API_KEY"
+HTTP_HEARTBEAT_SECONDS = 15.0
+MAX_HTTP_REQUEST_MB = 45
 
 MODEL_ID = "black-forest-labs/FLUX.1-Fill-dev"
 LORA_REPO_ID = "danideos/durer-flux-fill-lora"

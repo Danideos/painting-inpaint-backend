@@ -12,6 +12,7 @@ from painting_inpaint_backend.core.image_io import image_to_base64
 from painting_inpaint_backend.core.inference import InferenceService
 from painting_inpaint_backend.core.model_loading import LoadedPipeline
 from painting_inpaint_backend.core.progress import ProgressReporter, sanitize_for_progress
+from painting_inpaint_backend.core.streaming import stream_inference_events
 from painting_inpaint_backend.runpod.service import run_job_input_streaming
 
 
@@ -130,6 +131,24 @@ def test_streaming_worker_yields_progress_and_final_event():
     assert events[-1]["type"] == "final"
     assert events[-1]["event"] == "job_done"
     assert set(events[-1]["output"].keys()) == set(non_streaming.keys())
+
+
+def test_provider_neutral_streamer_keeps_provider_metadata_base64_free():
+    events = list(
+        stream_inference_events(
+            _payload(),
+            service=_worker_with_fake_pipeline(),
+            run_id="run-1",
+            provider="modal",
+            received_message="received",
+            completion_message="completed",
+            received_metadata={"image_base64": "must-not-leak"},
+        )
+    )
+
+    assert events[0]["run_id"] == "run-1"
+    assert events[0]["metadata"] == {"provider": "modal"}
+    assert events[-1]["type"] == "final"
 
 
 def test_inference_step_callback_event_shape():

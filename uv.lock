@@ -1583,6 +1583,7 @@ inference = [
     { name = "transformers" },
 ]
 modal = [
+    { name = "fastapi" },
     { name = "modal" },
 ]
 runpod = [
@@ -1602,6 +1603,7 @@ dev = [
 requires-dist = [
     { name = "accelerate", marker = "extra == 'inference'", specifier = ">=1.0,<2" },
     { name = "diffusers", marker = "extra == 'inference'", specifier = ">=0.37.1,<0.39" },
+    { name = "fastapi", marker = "extra == 'modal'", specifier = ">=0.115,<1" },
     { name = "huggingface-hub", specifier = ">=0.34,<1" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.5,<2" },
     { name = "numpy", specifier = ">=1.26,<3" },

@@ -41,6 +41,9 @@ Defaults:
 
 Mask convention: white means edit/inpaint, black means preserve.
 
+The default maximum input size is 2,073,600 pixels, allowing 1440x1440 image/mask
+pairs. `MAX_IMAGE_PIXELS` may override this deployment limit.
+
 ## Provider-Neutral Response
 
 The logical response is a JSON object:

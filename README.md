@@ -27,6 +27,9 @@ from painting_inpaint_backend import InferenceService
 output = InferenceService().run(payload)
 ```
 
+The default input limit is 2,073,600 pixels, which accepts 1440x1440 images and masks.
+Deployments may override it with `MAX_IMAGE_PIXELS`.
+
 ## Development
 
 Dependencies are defined only in `pyproject.toml` and locked in `uv.lock`.

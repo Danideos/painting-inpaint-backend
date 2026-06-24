@@ -98,6 +98,35 @@ def test_oversized_image_dimensions_are_rejected(monkeypatch):
         )
 
 
+def test_default_limit_accepts_1440_square_image(monkeypatch):
+    monkeypatch.delenv("MAX_IMAGE_PIXELS", raising=False)
+    image = Image.new("RGB", (1440, 1440), "red")
+
+    decoded = load_request_image(
+        {"image_base64": image_to_base64(image)},
+        label="image",
+        url_key="image_url",
+        base64_key="image_base64",
+        mode="RGB",
+    )
+
+    assert decoded.size == (1440, 1440)
+
+
+def test_default_limit_rejects_more_than_1440_square_pixels(monkeypatch):
+    monkeypatch.delenv("MAX_IMAGE_PIXELS", raising=False)
+    image = Image.new("RGB", (1441, 1440), "red")
+
+    with pytest.raises(ImageInputError, match="MAX_IMAGE_PIXELS=2073600"):
+        load_request_image(
+            {"image_base64": image_to_base64(image)},
+            label="image",
+            url_key="image_url",
+            base64_key="image_base64",
+            mode="RGB",
+        )
+
+
 def test_url_content_length_over_limit_is_rejected(monkeypatch):
     monkeypatch.setenv("MAX_DOWNLOAD_MB", "1")
 

@@ -61,6 +61,7 @@ wrote generated/test_payload.json
 | First GPU invocation | historical failure | | The native spike tried to read `/root/requirements.txt`; the consolidated backend removes that duplicated dependency path. |
 | First successful GPU smoke | done | 49.6 s observed | L40S, 512x512, 8 steps; pipeline load 8.639 s, LoRA 0.639 s, inference 26.330 s, peak allocated VRAM 23,206.85 MiB. |
 | Consolidated-image FLUX inference | done | 94.3 s observed | L40S, 512x512, 8 steps; pipeline load 26.765 s, LoRA 1.292 s, inference 31.661 s. Model source was `explicit_local_path`, LoRA loaded from Volume, and hard composite preserved the outside mask. |
+| Candidate-image FLUX inference | done | 81.1 s observed | Candidate `ee05730...`; L40S, 512x512, 8 steps; pipeline load 8.292 s, LoRA 0.481 s, inference 40.573 s, outside mask preserved. |
 | Later likely-cold inference | pending | | |
 
 ## Evaluation Questions

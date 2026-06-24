@@ -152,6 +152,7 @@ def test_modal_adapter_exposes_streaming_http_contract():
     ).read_text(encoding="utf-8")
     assert '.env({"PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF})' in source
     assert "min_containers" not in source
+    assert "from __future__ import annotations" not in source
 
 
 def test_backend_package_initializers_do_not_eagerly_import_inference():

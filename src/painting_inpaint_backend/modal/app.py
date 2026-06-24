@@ -1,7 +1,5 @@
 """Modal app using the shared backend package from an immutable registry image."""
 
-from __future__ import annotations
-
 import os
 import time
 import uuid

@@ -33,8 +33,10 @@ inference_image = modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
         "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
     }
 )
-web_image = modal.Image.debian_slim(python_version="3.11").uv_pip_install(
-    "fastapi>=0.115,<1"
+web_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .uv_pip_install("fastapi>=0.115,<1")
+    .env({"PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF})
 )
 
 

@@ -150,6 +150,7 @@ def test_modal_adapter_exposes_streaming_http_contract():
     assert "painting-inpaint-restoration-api" in (
         ROOT / "src" / "painting_inpaint_backend" / "modal" / "config.py"
     ).read_text(encoding="utf-8")
+    assert '.env({"PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF})' in source
     assert "min_containers" not in source
 
 

@@ -87,12 +87,12 @@ Modal accepts the provider-neutral inner request directly at:
 ```text
 POST /v1/restore/stream
 Authorization: Bearer <dedicated restoration API key>
-Accept: application/x-ndjson
+Accept: text/event-stream
 ```
 
-The endpoint emits one JSON event per line. It begins with `modal_queued`, forwards the
+The endpoint emits JSON objects in SSE `data:` frames. It begins with `modal_queued`, forwards the
 shared backend progress events, and terminates with either `job_done` containing the
-normal provider-neutral output or `job_failed`. Blank lines are heartbeats and clients
+normal provider-neutral output or `job_failed`. SSE comments are heartbeats and clients
 must ignore them.
 
 Modal deliberately does not imitate RunPod's detached `/run`, `/status`, and `/cancel`

@@ -20,7 +20,7 @@ from .config import (
     VOLUME_NAME,
     backend_image_ref,
 )
-from .http import NDJSON_MEDIA_TYPE, bearer_token_matches, stream_ndjson_with_heartbeats
+from .http import SSE_MEDIA_TYPE, bearer_token_matches, stream_sse_with_heartbeats
 
 app = modal.App(APP_NAME)
 model_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
@@ -166,12 +166,16 @@ def restoration_api():
             yield from FluxFillModalBackend().restore_stream.remote_gen(payload, run_id)
 
         return StreamingResponse(
-            stream_ndjson_with_heartbeats(
+            stream_sse_with_heartbeats(
                 event_source,
                 run_id=run_id,
                 heartbeat_seconds=HTTP_HEARTBEAT_SECONDS,
             ),
-            media_type=NDJSON_MEDIA_TYPE,
+            media_type=SSE_MEDIA_TYPE,
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     return api

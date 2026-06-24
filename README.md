@@ -105,7 +105,7 @@ handling cannot download weights. Responses cross the Modal boundary as JSON str
 
 ### Modal HTTP API
 
-The colleague-facing client uses an authenticated NDJSON endpoint while direct Modal
+The colleague-facing client uses an authenticated SSE endpoint while direct Modal
 invocation remains available for backend smoke tests. Create a dedicated API secret;
 this key grants access only to this restoration endpoint and is not a Modal workspace
 credential:
@@ -132,13 +132,13 @@ The ASGI deployment exposes:
 POST /v1/restore/stream
 Authorization: Bearer <RESTORATION_API_KEY>
 Content-Type: application/json
-Accept: application/x-ndjson
+Accept: text/event-stream
 ```
 
 The request body is the provider-neutral restoration input without a RunPod `input`
 wrapper. The response starts with `modal_queued`, streams the same structured model and
 inference events as RunPod, and ends with `job_done` containing the normal output.
-Blank lines are connection heartbeats and do not represent progress.
+SSE comments are connection heartbeats and do not represent progress.
 
 ## LoRA
 

@@ -33,7 +33,7 @@ errors cross the Modal boundary as JSON strings to avoid local pickle dependenci
 The GPU class exposes both direct `restore` invocation for backend smoke tests and a
 streaming generator used by the HTTP gateway. A small ASGI function authenticates a
 dedicated bearer key, emits an immediate queued event, keeps the connection alive with
-blank NDJSON heartbeats, and forwards shared progress events from the GPU method. It has
+SSE comment heartbeats, and forwards shared progress events from the GPU method. It has
 no model weights, GPU, warm-container setting, or duplicated inference logic.
 
 The image reference must be supplied through `PAINTING_INPAINT_BACKEND_IMAGE` as a full

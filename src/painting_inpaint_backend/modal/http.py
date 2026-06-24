@@ -1,4 +1,4 @@
-"""Authenticated NDJSON gateway helpers for Modal restoration requests."""
+"""Authenticated SSE gateway helpers for Modal restoration requests."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import Any
 from ..core.progress import ProgressReporter
 from .boundary import json_response
 
-NDJSON_MEDIA_TYPE = "application/x-ndjson"
+SSE_MEDIA_TYPE = "text/event-stream"
 _STREAM_DONE = object()
 
 
@@ -53,7 +53,7 @@ def _gateway_error_event(run_id: str, exc: Exception) -> dict[str, Any]:
     )
 
 
-def stream_ndjson_with_heartbeats(
+def stream_sse_with_heartbeats(
     event_source: Callable[[], Iterable[str | dict[str, Any]]],
     *,
     run_id: str | None = None,
@@ -73,7 +73,7 @@ def stream_ndjson_with_heartbeats(
         finally:
             events.put(_STREAM_DONE)
 
-    yield json_response(modal_queued_event(resolved_run_id)) + "\n"
+    yield f"data: {json_response(modal_queued_event(resolved_run_id))}\n\n"
     thread = threading.Thread(
         target=_consume,
         name="modal-http-stream-forwarder",
@@ -85,7 +85,7 @@ def stream_ndjson_with_heartbeats(
             try:
                 event = events.get(timeout=heartbeat_seconds)
             except queue.Empty:
-                yield "\n"
+                yield ": heartbeat\n\n"
                 continue
             if event is _STREAM_DONE:
                 break
@@ -101,6 +101,6 @@ def stream_ndjson_with_heartbeats(
                 encoded = json_response(event)
             else:
                 raise TypeError("Modal GPU stream returned an unsupported event value.")
-            yield encoded + "\n"
+            yield f"data: {encoded}\n\n"
     finally:
         thread.join(timeout=1.0)

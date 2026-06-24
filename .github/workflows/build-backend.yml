@@ -17,7 +17,6 @@ permissions:
   packages: write
 
 env:
-  LEGACY_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/flux-fill-worker
   BACKEND_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/painting-inpaint-backend
 
 jobs:
@@ -28,9 +27,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set lowercase image names
+      - name: Set lowercase image name
         run: |
-          echo "LEGACY_IMAGE_NAME_LOWER=$(echo '${{ env.LEGACY_IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
           echo "BACKEND_IMAGE_NAME_LOWER=$(echo '${{ env.BACKEND_IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
@@ -51,7 +49,5 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.LEGACY_IMAGE_NAME_LOWER }}:latest
-            ${{ env.LEGACY_IMAGE_NAME_LOWER }}:${{ github.sha }}
             ${{ env.BACKEND_IMAGE_NAME_LOWER }}:latest
             ${{ env.BACKEND_IMAGE_NAME_LOWER }}:${{ github.sha }}

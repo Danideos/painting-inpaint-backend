@@ -24,9 +24,10 @@ ghcr.io/danideos/flux-fill-worker:ee05730575717631cb8ce0ea5cc096030a538cd5
 ghcr.io/danideos/painting-inpaint-backend:ee05730575717631cb8ce0ea5cc096030a538cd5
 ```
 
-The GitHub Actions build published both names from one build. The legacy package is
-anonymously pullable. The new `painting-inpaint-backend` GHCR package still requires a
-one-time visibility change to public in GitHub package settings.
+The GitHub Actions build published both names from one build. Both packages were made
+anonymously pullable for the migration. RunPod now references the new backend package,
+and subsequent workflows publish only `painting-inpaint-backend`; historical
+`flux-fill-worker` tags remain available for rollback.
 
 ## Modal Acceptance
 
@@ -41,7 +42,8 @@ one-time visibility change to public in GitHub package settings.
 
 ## RunPod Acceptance
 
-- Endpoint `sroyp06ttnv9rn` was updated from the rollback image to the candidate.
+- Endpoint `sroyp06ttnv9rn` was updated from the rollback image to the candidate and then
+  switched to the identical `painting-inpaint-backend` image name.
 - Existing endpoint settings were preserved, including zero minimum workers.
 - The unchanged remote client streamed queue, preprocessing, model, LoRA, 22 effective
   inference steps, postprocessing, and completion events.

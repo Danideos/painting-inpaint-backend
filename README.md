@@ -89,6 +89,7 @@ $env:PAINTING_INPAINT_BACKEND_IMAGE = `
   "ghcr.io/danideos/painting-inpaint-backend:<full-commit-sha>"
 
 uv run python scripts/inspect_modal_volume.py
+uv run python scripts/smoke_modal_registry_image.py
 uv run python scripts/create_modal_smoke_payload.py
 uv run python scripts/smoke_modal_inference.py `
   --payload generated/modal_smoke_payload.json `

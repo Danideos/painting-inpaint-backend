@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
+from pathlib import Path
 from typing import Any
 
 import modal
@@ -47,11 +48,13 @@ def populate_volume(force: bool = False) -> dict[str, Any]:
         raise RuntimeError(f"Modal secret {HF_SECRET_NAME!r} must expose HF_TOKEN.")
 
     started = time.perf_counter()
-    MODEL_DIR.parent.mkdir(parents=True, exist_ok=True)
-    LORA_DIR.parent.mkdir(parents=True, exist_ok=True)
+    model_dir = Path(MODEL_DIR)
+    lora_dir = Path(LORA_DIR)
+    model_dir.parent.mkdir(parents=True, exist_ok=True)
+    lora_dir.parent.mkdir(parents=True, exist_ok=True)
 
     downloads: list[dict[str, Any]] = []
-    for repo_id, target in ((MODEL_ID, MODEL_DIR), (LORA_REPO_ID, LORA_DIR)):
+    for repo_id, target in ((MODEL_ID, model_dir), (LORA_REPO_ID, lora_dir)):
         item_started = time.perf_counter()
         ready_marker = target / READY_MARKER_NAME
         if force or not ready_marker.exists():
@@ -110,8 +113,8 @@ def inspect_volume() -> dict[str, Any]:
     return {
         "volume": VOLUME_NAME,
         "mount": str(MODELS_DIR),
-        "model": snapshot_summary(MODEL_DIR),
-        "lora": snapshot_summary(LORA_DIR),
+        "model": snapshot_summary(Path(MODEL_DIR)),
+        "lora": snapshot_summary(Path(LORA_DIR)),
     }
 
 

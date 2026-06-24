@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
+from pathlib import PurePosixPath
 
 APP_NAME = "painting-inpaint-backend-modal"
 VOLUME_NAME = "flux-fill-models"
@@ -13,7 +13,7 @@ HF_SECRET_NAME = "huggingface-secret"
 MODEL_ID = "black-forest-labs/FLUX.1-Fill-dev"
 LORA_REPO_ID = "danideos/durer-flux-fill-lora"
 
-MODELS_DIR = Path("/models")
+MODELS_DIR = PurePosixPath("/models")
 MODEL_DIR = MODELS_DIR / MODEL_ID
 LORA_DIR = MODELS_DIR / LORA_REPO_ID
 

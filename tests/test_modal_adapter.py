@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from painting_inpaint_backend.modal.boundary import json_response, safe_remote_error
-from painting_inpaint_backend.modal.config import backend_image_ref
+from painting_inpaint_backend.modal.config import INFERENCE_ENV, backend_image_ref
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,6 +41,13 @@ def test_backend_image_accepts_commit_tag(monkeypatch):
     monkeypatch.setenv("PAINTING_INPAINT_BACKEND_IMAGE", image)
 
     assert backend_image_ref() == image
+
+
+def test_modal_paths_are_posix_even_on_windows():
+    assert INFERENCE_ENV["MODEL_PATH"].startswith("/models/")
+    assert "\\" not in INFERENCE_ENV["MODEL_PATH"]
+    assert INFERENCE_ENV["LORA_PATH"].startswith("/models/")
+    assert "\\" not in INFERENCE_ENV["LORA_PATH"]
 
 
 def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_workers():

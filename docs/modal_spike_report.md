@@ -60,7 +60,7 @@ wrote generated/test_payload.json
 | Volume inspection | done | | Both expected directories exist and report `ready=true`. |
 | First GPU invocation | historical failure | | The native spike tried to read `/root/requirements.txt`; the consolidated backend removes that duplicated dependency path. |
 | First successful GPU smoke | done | 49.6 s observed | L40S, 512x512, 8 steps; pipeline load 8.639 s, LoRA 0.639 s, inference 26.330 s, peak allocated VRAM 23,206.85 MiB. |
-| Consolidated-image FLUX inference | pending | | Requires a commit-tagged backend image. |
+| Consolidated-image FLUX inference | done | 94.3 s observed | L40S, 512x512, 8 steps; pipeline load 26.765 s, LoRA 1.292 s, inference 31.661 s. Model source was `explicit_local_path`, LoRA loaded from Volume, and hard composite preserved the outside mask. |
 | Later likely-cold inference | pending | | |
 
 ## Evaluation Questions
@@ -68,7 +68,7 @@ wrote generated/test_payload.json
 1. Can Modal support the use case with zero warm workers? Yes for the initial smoke test; repeated cold tests remain.
 2. Can FLUX Fill and LoRA weights be stored in a Volume and reused across cold starts? Yes.
 3. Can inference run without downloading weights during requests? Yes. The consolidated backend must record `source=explicit_local_path` and `local_files_only=true`.
-4. How much cold-start latency remains, and what dominates it? First successful smoke observed 49.6 s total; inference was 26.330 s and pipeline loading was 8.639 s.
+4. How much cold-start latency remains, and what dominates it? The native smoke observed 49.6 s. The first consolidated-image smoke observed 94.3 s, including 26.765 s pipeline loading and 31.661 s inference; image/container startup accounts for much of the remainder.
 5. Does this look better than the current RunPod serverless setup? Pending.
 6. What is the cleanest path to future client compatibility? Likely a provider transport layer.
 7. Should this separate repo remain separate? No. Modal is now a provider adapter in the shared backend.

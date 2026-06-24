@@ -5,13 +5,18 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import sys
 from pathlib import Path
+
+import modal
 
 from painting_inpaint_backend.core.progress import sanitize_for_progress
 from painting_inpaint_backend.modal.app import FluxFillModalBackend, app
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--payload", type=Path, default=Path("generated/modal_smoke_payload.json"))
     parser.add_argument("--out-dir", type=Path, default=Path("outputs"))
@@ -23,7 +28,7 @@ def main() -> int:
     timings_path = args.out_dir / "modal_timings.json"
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    with app.run():
+    with modal.enable_output(), app.run():
         serialized_result = FluxFillModalBackend().restore.remote(payload)
 
     if not isinstance(serialized_result, str):

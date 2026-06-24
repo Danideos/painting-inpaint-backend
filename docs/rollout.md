@@ -64,3 +64,34 @@ model preparation, inference steps, postprocessing, and completion. The result m
 still show L40S, explicit Volume model and LoRA paths, offline loading, and exact
 outside-mask preservation. RunPod remains on its current image until its regression
 smoke against the new shared stream code passes.
+
+Final deployed backend image:
+
+```text
+ghcr.io/danideos/painting-inpaint-backend:e66a412b581261581465bc22ec0b2f049c731557
+sha256:e927c53a15c487bc08864f4aa9d3439e025b5d41ccafb19b904a9c841f40e459
+```
+
+The image is anonymously pullable. The Modal app is deployed at the `restoration_api`
+web function and is pinned to this immutable tag. The dedicated bearer key lives only
+in Modal Secret `painting-inpaint-restoration-api` and the ignored Drive `.env`.
+
+### HTTP Acceptance
+
+- The new remote client completed a 1024x1024 Rosary center request in 79.455 seconds.
+- The endpoint streamed queued, preprocessing, model preparation, 8 inference steps,
+  postprocessing, and completion.
+- The GPU was NVIDIA L40S; model source was `explicit_local_path` with
+  `local_files_only=true`.
+- LoRA loaded from `/models/danideos/durer-flux-fill-lora` and inference downloaded no
+  weights.
+- Inference took 31.450 seconds and outside-mask preservation remained exact.
+- A final 512x512 confirmation against image `e66a412...` completed in 74.260 seconds
+  with all public progress states and 4 inference steps.
+
+### RunPod Client Regression
+
+The existing RunPod endpoint image was not changed. The updated client defaulted to
+RunPod, completed a 512x512 four-step request on NVIDIA A40 in 52.084 seconds, streamed
+all public progress states, decoded the final image, and preserved pixels outside the
+mask. Moving RunPod to the new backend image remains a separate deployment decision.

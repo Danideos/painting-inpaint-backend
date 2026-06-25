@@ -28,8 +28,6 @@ app = modal.App(f"{APP_NAME}-canny-volume")
 volume = modal.Volume.from_name(CANNY_VOLUME_NAME, create_if_missing=True)
 
 _BACKEND_IMAGE_REF = backend_image_ref()
-_MODEL_REVISION = os.environ.get("CANNY_MODEL_REVISION", "").strip()
-_LORA_REVISION = os.environ.get("CANNY_LORA_REVISION", "").strip()
 _SHA_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 
 download_image = modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
@@ -49,7 +47,11 @@ def _required_revision(value: str, env_name: str) -> str:
     secrets=[modal.Secret.from_name(HF_SECRET_NAME)],
     timeout=7200,
 )
-def populate_canny_volume(force: bool = False) -> dict[str, Any]:
+def populate_canny_volume(
+    model_revision: str,
+    lora_revision: str,
+    force: bool = False,
+) -> dict[str, Any]:
     """Download pinned FLUX-Canny and rank-64 LoRA snapshots."""
 
     from huggingface_hub import HfApi, snapshot_download
@@ -62,12 +64,12 @@ def populate_canny_volume(force: bool = False) -> dict[str, Any]:
         (
             CANNY_MODEL_ID,
             Path(CANNY_MODEL_DIR),
-            _required_revision(_MODEL_REVISION, "CANNY_MODEL_REVISION"),
+            _required_revision(model_revision, "CANNY_MODEL_REVISION"),
         ),
         (
             CANNY_LORA_REPO_ID,
             Path(CANNY_LORA_DIR),
-            _required_revision(_LORA_REVISION, "CANNY_LORA_REVISION"),
+            _required_revision(lora_revision, "CANNY_LORA_REVISION"),
         ),
     )
     started = time.perf_counter()

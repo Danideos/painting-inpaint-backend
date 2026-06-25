@@ -9,6 +9,7 @@ The logical request is a JSON object:
 
 ```json
 {
+  "method": "flux_fill",
   "prompt": "DURER_RESTO",
   "image_base64": "...",
   "mask_base64": "...",
@@ -23,6 +24,14 @@ The logical request is a JSON object:
 }
 ```
 
+Supported methods:
+
+- `flux_fill` is the backward-compatible default when `method` is omitted.
+- `flux_canny_lanpaint` selects the Modal FLUX-Canny/LanPaint service.
+
+FLUX-Canny accepts optional `control_image_base64`. When omitted, the backend derives
+the Canny control from `image_base64`. The control image must match the input size.
+
 Required for Modal v1:
 
 - `image_base64`
@@ -32,7 +41,7 @@ Defaults:
 
 - `prompt`: `DURER_RESTO`
 - `partial_noise`: `1.0`
-- `guidance_scale`: `30.0`
+- `guidance_scale`: `30.0` for FLUX Fill, `1.5` for FLUX-Canny/LanPaint
 - `num_inference_steps`: `30`
 - `lora_scale`: `1.0`
 - `output_format`: `png`
@@ -94,6 +103,9 @@ The endpoint emits JSON objects in SSE `data:` frames. It begins with `modal_que
 shared backend progress events, and terminates with either `job_done` containing the
 normal provider-neutral output or `job_failed`. SSE comments are heartbeats and clients
 must ignore them.
+
+The same endpoint routes by `method`. Unknown methods return HTTP 400 before a GPU is
+invoked. Existing clients omit `method` and therefore continue to use FLUX Fill.
 
 Modal deliberately does not imitate RunPod's detached `/run`, `/status`, and `/cancel`
 queue API. The first client integration supports the high-level blocking restore with

@@ -1,9 +1,8 @@
 # Painting Inpaint Backend
 
-Shared FLUX Fill inference backend for painting restoration. One provider-neutral
-`InferenceService` owns model loading, partial-noise scheduling, image validation,
-LoRA scaling, hard compositing, progress events, and response construction. Thin
-adapters expose that service through RunPod Serverless and Modal.
+Shared FLUX Fill and FLUX-Canny/LanPaint inference backend for painting restoration.
+FLUX Fill remains the backward-compatible default and the only RunPod method. Modal
+routes both methods behind one authenticated streaming endpoint.
 
 The base FLUX model, LoRA weights, Hugging Face caches, secrets, and generated runs are
 not stored in Git or baked into the Docker image.
@@ -84,6 +83,17 @@ GPU: L40S
 Model: /models/black-forest-labs/FLUX.1-Fill-dev
 LoRA: /models/danideos/durer-flux-fill-lora
 ```
+
+The optional Canny method uses separate private resources:
+
+```text
+Volume: flux-canny-models
+Model: /models/black-forest-labs/FLUX.1-Canny-dev
+LoRA: /models/danideos/durer-flux-canny-lora
+Image: ghcr.io/danideos/painting-inpaint-backend-canny:<sha>
+```
+
+See `docs/flux_canny_modal.md` for private-image, Volume, and staging instructions.
 
 Set the backend image to an immutable 40-character commit tag:
 

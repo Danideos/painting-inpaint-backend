@@ -33,9 +33,12 @@ def snapshot_summary(path: Path) -> dict[str, Any]:
     }
 
 
-def write_ready_marker(path: Path, *, repo_id: str) -> None:
+def write_ready_marker(path: Path, *, repo_id: str, revision: str | None = None) -> None:
     marker = path / READY_MARKER_NAME
+    payload: dict[str, Any] = {"repo_id": repo_id, "complete": True}
+    if revision is not None:
+        payload["revision"] = revision
     marker.write_text(
-        json.dumps({"repo_id": repo_id, "complete": True}, sort_keys=True),
+        json.dumps(payload, sort_keys=True),
         encoding="utf-8",
     )

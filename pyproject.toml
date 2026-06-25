@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "painting-inpaint-backend"
 version = "0.1.0"
-description = "Shared FLUX Fill inference backend for RunPod and Modal."
+description = "Shared FLUX Fill and FLUX-Canny/LanPaint restoration backend."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
@@ -25,6 +25,10 @@ inference = [
     "torch>=2.5,<2.6",
     "transformers>=4.56,<5",
 ]
+canny = [
+    "LanPaint @ git+https://github.com/scraed/LanPaint.git@ba4bb687f1e48dc1f1bb2e8d7c90516bba4e2a3c",
+    "opencv-python-headless>=4.10,<5",
+]
 runpod = ["runpod>=1.7,<2"]
 modal = [
     "fastapi>=0.115,<1",
@@ -39,6 +43,9 @@ dev = [
     "ruff>=0.12,<1",
     "runpod>=1.7,<2",
 ]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/painting_inpaint_backend"]

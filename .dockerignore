@@ -19,6 +19,7 @@ build/
 data/
 runpod_runs/
 local_runs/
+local_assets/
 generated/
 outputs/
 runs/

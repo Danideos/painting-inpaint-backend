@@ -29,7 +29,7 @@ def bearer_token_matches(authorization: str | None, expected_key: str) -> bool:
     return secrets.compare_digest(supplied_key, expected_key)
 
 
-def modal_queued_event(run_id: str) -> dict[str, Any]:
+def modal_queued_event(run_id: str, *, method: str = "flux_fill") -> dict[str, Any]:
     """Build the first event emitted before Modal GPU scheduling."""
 
     reporter = ProgressReporter(run_id=run_id, enabled=True)
@@ -37,7 +37,7 @@ def modal_queued_event(run_id: str) -> dict[str, Any]:
         "modal_queued",
         stage="modal",
         message="Waiting for a Modal GPU container.",
-        metadata={"provider": "modal"},
+        metadata={"provider": "modal", "method": method},
     )
 
 
@@ -57,6 +57,7 @@ def stream_sse_with_heartbeats(
     event_source: Callable[[], Iterable[str | dict[str, Any]]],
     *,
     run_id: str | None = None,
+    method: str = "flux_fill",
     heartbeat_seconds: float = 15.0,
 ) -> Iterator[str]:
     """Forward a blocking Modal event source while keeping HTTP connections alive."""
@@ -73,7 +74,7 @@ def stream_sse_with_heartbeats(
         finally:
             events.put(_STREAM_DONE)
 
-    yield f"data: {json_response(modal_queued_event(resolved_run_id))}\n\n"
+    yield f"data: {json_response(modal_queued_event(resolved_run_id, method=method))}\n\n"
     thread = threading.Thread(
         target=_consume,
         name="modal-http-stream-forwarder",

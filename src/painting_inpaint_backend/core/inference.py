@@ -19,6 +19,7 @@ from .image_helpers import (
     outside_mask_changed,
 )
 from .image_io import image_to_base64, load_request_image, normalize_output_format
+from .methods import FLUX_FILL_METHOD, RestorationMethod, normalize_method
 from .model_loading import LoadedPipeline, load_pipeline, set_lora_scale
 from .partial_noise import normalize_partial_noise, set_partial_noise
 from .progress import ProgressReporter
@@ -183,6 +184,7 @@ def _add_inference_progress_callback(
 class RequestSettings:
     """Validated scalar inference settings."""
 
+    method: RestorationMethod
     prompt: str
     negative_prompt: str
     partial_noise: float
@@ -214,6 +216,11 @@ def _optional_int(payload: dict[str, Any], key: str, default: int) -> int:
 def parse_request_settings(payload: dict[str, Any]) -> RequestSettings:
     """Validate request scalar parameters."""
 
+    try:
+        method = normalize_method(payload.get("method"))
+    except ValueError as exc:
+        raise WorkerInputError(str(exc)) from exc
+
     if "prompt" not in payload:
         raise WorkerInputError("prompt is required.")
     prompt = payload["prompt"]
@@ -224,7 +231,8 @@ def parse_request_settings(payload: dict[str, Any]) -> RequestSettings:
         partial_noise = normalize_partial_noise(payload.get("partial_noise"))
     except ValueError as exc:
         raise WorkerInputError(str(exc)) from exc
-    guidance_scale = _optional_float(payload, "guidance_scale", 30.0)
+    default_guidance = 1.5 if method == "flux_canny_lanpaint" else 30.0
+    guidance_scale = _optional_float(payload, "guidance_scale", default_guidance)
     if guidance_scale < 0:
         raise WorkerInputError("guidance_scale must be non-negative.")
 
@@ -254,6 +262,7 @@ def parse_request_settings(payload: dict[str, Any]) -> RequestSettings:
         raise WorkerInputError(str(exc)) from exc
 
     return RequestSettings(
+        method=method,
         prompt=prompt,
         negative_prompt=str(payload.get("negative_prompt", "")),
         partial_noise=partial_noise,
@@ -344,6 +353,11 @@ class InferenceService:
                 keep_history=include_progress_history,
             )
         settings = parse_request_settings(payload)
+        if settings.method != FLUX_FILL_METHOD:
+            raise WorkerInputError(
+                "The FLUX Fill service only accepts method='flux_fill'. "
+                "FLUX-Canny/LanPaint is available through the Modal Canny service."
+            )
         reporter.emit(
             "input_decode_start",
             stage="input",

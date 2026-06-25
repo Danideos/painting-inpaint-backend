@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from painting_inpaint_backend.modal.boundary import json_response, safe_remote_error
-from painting_inpaint_backend.modal.config import INFERENCE_ENV, backend_image_ref
+from painting_inpaint_backend.modal.config import (
+    CANNY_INFERENCE_ENV,
+    INFERENCE_ENV,
+    backend_image_ref,
+    canny_backend_image_ref,
+)
 from painting_inpaint_backend.modal.http import (
     bearer_token_matches,
     stream_sse_with_heartbeats,
@@ -47,11 +52,22 @@ def test_backend_image_accepts_commit_tag(monkeypatch):
     assert backend_image_ref() == image
 
 
+def test_canny_image_requires_immutable_reference(monkeypatch):
+    image = "ghcr.io/danideos/painting-inpaint-backend-canny:" + "b" * 40
+    monkeypatch.setenv("PAINTING_INPAINT_CANNY_IMAGE", image)
+
+    assert canny_backend_image_ref() == image
+
+
 def test_modal_paths_are_posix_even_on_windows():
     assert INFERENCE_ENV["MODEL_PATH"].startswith("/models/")
     assert "\\" not in INFERENCE_ENV["MODEL_PATH"]
     assert INFERENCE_ENV["LORA_PATH"].startswith("/models/")
     assert "\\" not in INFERENCE_ENV["LORA_PATH"]
+    assert CANNY_INFERENCE_ENV["MODEL_PATH"].startswith("/models/")
+    assert CANNY_INFERENCE_ENV["LORA_PATH"].startswith("/models/")
+    assert "\\" not in CANNY_INFERENCE_ENV["MODEL_PATH"]
+    assert "\\" not in CANNY_INFERENCE_ENV["LORA_PATH"]
 
 
 def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_workers():
@@ -66,6 +82,11 @@ def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_worker
     assert "keep_warm" not in source
     assert "schedule=" not in source
     assert "InferenceService" in source
+    assert "FluxCannyLanPaintModalBackend" in source
+    assert "FluxCannyLanPaintService" in source
+    assert "painting-inpaint-ghcr" in (
+        ROOT / "src" / "painting_inpaint_backend" / "modal" / "config.py"
+    ).read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(

@@ -42,6 +42,7 @@ secrets/
 *token*.txt
 
 # Model artifacts
+local_assets/
 *.safetensors
 *.ckpt
 *.pt

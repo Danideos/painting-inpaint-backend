@@ -1,4 +1,4 @@
-"""Invoke the Modal FLUX Fill backend with a JSON payload."""
+"""Invoke a Modal restoration backend with a JSON payload."""
 
 from __future__ import annotations
 
@@ -6,12 +6,18 @@ import argparse
 import base64
 import json
 import sys
+import uuid
 from pathlib import Path
 
 import modal
 
+from painting_inpaint_backend.core.methods import FLUX_CANNY_LANPAINT_METHOD, normalize_method
 from painting_inpaint_backend.core.progress import sanitize_for_progress
-from painting_inpaint_backend.modal.app import FluxFillModalBackend, app
+from painting_inpaint_backend.modal.app import (
+    FluxCannyLanPaintModalBackend,
+    FluxFillModalBackend,
+    app,
+)
 
 
 def main() -> int:
@@ -20,6 +26,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--payload", type=Path, default=Path("generated/modal_smoke_payload.json"))
     parser.add_argument("--out-dir", type=Path, default=Path("outputs"))
+    parser.add_argument("--stream", action="store_true")
     args = parser.parse_args()
 
     payload = json.loads(args.payload.read_text(encoding="utf-8"))
@@ -27,9 +34,35 @@ def main() -> int:
     output_image_path = args.out_dir / "modal_output.png"
     timings_path = args.out_dir / "modal_timings.json"
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    method = normalize_method(payload.get("method"))
+    backend = (
+        FluxCannyLanPaintModalBackend()
+        if method == FLUX_CANNY_LANPAINT_METHOD
+        else FluxFillModalBackend()
+    )
 
     with modal.enable_output(), app.run():
-        serialized_result = FluxFillModalBackend().restore.remote(payload)
+        if args.stream:
+            events_path = args.out_dir / "modal_events.jsonl"
+            final_event = None
+            with events_path.open("w", encoding="utf-8") as events_file:
+                for serialized_event in backend.restore_stream.remote_gen(
+                    payload,
+                    uuid.uuid4().hex,
+                ):
+                    event = json.loads(serialized_event)
+                    events_file.write(json.dumps(event, sort_keys=True) + "\n")
+                    print(event.get("message", event.get("event", "progress")), flush=True)
+                    if event.get("type") == "error":
+                        raise RuntimeError(event.get("message", "Modal restoration failed."))
+                    if event.get("type") == "final":
+                        final_event = event
+            if final_event is None:
+                raise RuntimeError("Modal stream closed without a final event.")
+            result = final_event["output"]
+            serialized_result = json.dumps(result)
+        else:
+            serialized_result = backend.restore.remote(payload)
 
     if not isinstance(serialized_result, str):
         raise TypeError(

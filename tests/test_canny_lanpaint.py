@@ -11,6 +11,7 @@ from painting_inpaint_backend.core.canny_lanpaint import (
     CANNY_HIGH_THRESHOLD,
     CANNY_LOW_THRESHOLD,
     LANPAINT_BETA,
+    LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER,
     LANPAINT_FRICTION,
     LANPAINT_INNER_STEPS,
     LANPAINT_LAMBDA,
@@ -18,6 +19,7 @@ from painting_inpaint_backend.core.canny_lanpaint import (
     load_control_image,
     make_canny_control,
     mask_edit_to_lanpaint_keep,
+    parse_canny_lanpaint_settings,
     reinject_keep_latents,
 )
 from painting_inpaint_backend.core.image_io import image_to_base64
@@ -140,3 +142,73 @@ def test_lanpaint_constants_match_validated_configuration():
     assert LANPAINT_LAMBDA == 10.0
     assert LANPAINT_BETA == 1.0
     assert LANPAINT_STEP_SIZE == 0.1
+    assert LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER == 3
+
+
+def test_canny_lanpaint_request_settings_default_to_validated_constants():
+    settings = parse_canny_lanpaint_settings({})
+
+    assert settings.canny_low_threshold == CANNY_LOW_THRESHOLD
+    assert settings.canny_high_threshold == CANNY_HIGH_THRESHOLD
+    assert settings.canny_blur_radius == 0.0
+    assert settings.lanpaint_inner_steps == LANPAINT_INNER_STEPS
+    assert settings.lanpaint_friction == LANPAINT_FRICTION
+    assert settings.lanpaint_lambda == LANPAINT_LAMBDA
+    assert settings.lanpaint_beta == LANPAINT_BETA
+    assert settings.lanpaint_step_size == LANPAINT_STEP_SIZE
+    assert (
+        settings.lanpaint_final_outer_steps_without_inner
+        == LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER
+    )
+
+
+def test_canny_lanpaint_request_settings_accept_overrides():
+    settings = parse_canny_lanpaint_settings(
+        {
+            "canny_low_threshold": "50",
+            "canny_high_threshold": "140",
+            "canny_blur_radius": "1.5",
+            "lanpaint_inner_steps": "8",
+            "lanpaint_friction": "12.5",
+            "lanpaint_lambda": "9",
+            "lanpaint_beta": "0.75",
+            "lanpaint_step_size": "0.05",
+            "lanpaint_final_outer_steps_without_inner": "2",
+        }
+    )
+
+    assert settings.canny_low_threshold == 50
+    assert settings.canny_high_threshold == 140
+    assert settings.canny_blur_radius == 1.5
+    assert settings.lanpaint_inner_steps == 8
+    assert settings.lanpaint_friction == 12.5
+    assert settings.lanpaint_lambda == 9.0
+    assert settings.lanpaint_beta == 0.75
+    assert settings.lanpaint_step_size == 0.05
+    assert settings.lanpaint_final_outer_steps_without_inner == 2
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        ({"canny_low_threshold": -1}, "canny_low_threshold"),
+        ({"canny_high_threshold": 256}, "canny_high_threshold"),
+        (
+            {"canny_low_threshold": 200, "canny_high_threshold": 100},
+            "greater than or equal",
+        ),
+        ({"canny_blur_radius": -0.1}, "canny_blur_radius"),
+        ({"lanpaint_inner_steps": -1}, "lanpaint_inner_steps"),
+        (
+            {"lanpaint_final_outer_steps_without_inner": -1},
+            "lanpaint_final_outer_steps_without_inner",
+        ),
+        ({"lanpaint_friction": -1}, "lanpaint_friction"),
+        ({"lanpaint_lambda": -1}, "lanpaint_lambda"),
+        ({"lanpaint_beta": -1}, "lanpaint_beta"),
+        ({"lanpaint_step_size": 0}, "lanpaint_step_size"),
+    ],
+)
+def test_canny_lanpaint_request_settings_reject_invalid_values(payload, message):
+    with pytest.raises(WorkerInputError, match=message):
+        parse_canny_lanpaint_settings(payload)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from contextlib import nullcontext
@@ -53,6 +54,100 @@ LANPAINT_BETA = 1.0
 LANPAINT_STEP_SIZE = 0.1
 LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER = 3
 LANPAINT_SCHEDULE_MODE = "diffusers_default"
+
+
+@dataclass(frozen=True)
+class CannyLanPaintRequestSettings:
+    """Request-overridable Canny/LanPaint controls with validated defaults."""
+
+    canny_low_threshold: int = CANNY_LOW_THRESHOLD
+    canny_high_threshold: int = CANNY_HIGH_THRESHOLD
+    canny_blur_radius: float = CANNY_BLUR_RADIUS
+    lanpaint_inner_steps: int = LANPAINT_INNER_STEPS
+    lanpaint_friction: float = LANPAINT_FRICTION
+    lanpaint_lambda: float = LANPAINT_LAMBDA
+    lanpaint_beta: float = LANPAINT_BETA
+    lanpaint_step_size: float = LANPAINT_STEP_SIZE
+    lanpaint_final_outer_steps_without_inner: int = (
+        LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER
+    )
+
+
+def _payload_int(payload: dict[str, Any], key: str, default: int) -> int:
+    value = payload.get(key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise WorkerInputError(f"{key} must be an integer.") from exc
+
+
+def _payload_float(payload: dict[str, Any], key: str, default: float) -> float:
+    value = payload.get(key, default)
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise WorkerInputError(f"{key} must be a number.") from exc
+    if not math.isfinite(number):
+        raise WorkerInputError(f"{key} must be finite.")
+    return number
+
+
+def parse_canny_lanpaint_settings(payload: dict[str, Any]) -> CannyLanPaintRequestSettings:
+    """Parse method-specific request controls without changing Fill behavior."""
+
+    low = _payload_int(payload, "canny_low_threshold", CANNY_LOW_THRESHOLD)
+    high = _payload_int(payload, "canny_high_threshold", CANNY_HIGH_THRESHOLD)
+    if not 0 <= low <= 255:
+        raise WorkerInputError("canny_low_threshold must be between 0 and 255.")
+    if not 0 <= high <= 255:
+        raise WorkerInputError("canny_high_threshold must be between 0 and 255.")
+    if high < low:
+        raise WorkerInputError(
+            "canny_high_threshold must be greater than or equal to canny_low_threshold."
+        )
+
+    blur = _payload_float(payload, "canny_blur_radius", CANNY_BLUR_RADIUS)
+    if blur < 0:
+        raise WorkerInputError("canny_blur_radius must be non-negative.")
+
+    inner_steps = _payload_int(payload, "lanpaint_inner_steps", LANPAINT_INNER_STEPS)
+    if inner_steps < 0:
+        raise WorkerInputError("lanpaint_inner_steps must be non-negative.")
+
+    final_without_inner = _payload_int(
+        payload,
+        "lanpaint_final_outer_steps_without_inner",
+        LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER,
+    )
+    if final_without_inner < 0:
+        raise WorkerInputError(
+            "lanpaint_final_outer_steps_without_inner must be non-negative."
+        )
+
+    friction = _payload_float(payload, "lanpaint_friction", LANPAINT_FRICTION)
+    lanpaint_lambda = _payload_float(payload, "lanpaint_lambda", LANPAINT_LAMBDA)
+    beta = _payload_float(payload, "lanpaint_beta", LANPAINT_BETA)
+    step_size = _payload_float(payload, "lanpaint_step_size", LANPAINT_STEP_SIZE)
+    if friction < 0:
+        raise WorkerInputError("lanpaint_friction must be non-negative.")
+    if lanpaint_lambda < 0:
+        raise WorkerInputError("lanpaint_lambda must be non-negative.")
+    if beta < 0:
+        raise WorkerInputError("lanpaint_beta must be non-negative.")
+    if step_size <= 0:
+        raise WorkerInputError("lanpaint_step_size must be greater than 0.")
+
+    return CannyLanPaintRequestSettings(
+        canny_low_threshold=low,
+        canny_high_threshold=high,
+        canny_blur_radius=blur,
+        lanpaint_inner_steps=inner_steps,
+        lanpaint_friction=friction,
+        lanpaint_lambda=lanpaint_lambda,
+        lanpaint_beta=beta,
+        lanpaint_step_size=step_size,
+        lanpaint_final_outer_steps_without_inner=final_without_inner,
+    )
 
 
 def make_canny_control(
@@ -476,6 +571,7 @@ class FluxCannyLanPaintService:
     ) -> dict[str, Any]:
         reporter = reporter or ProgressReporter(enabled=False)
         settings = parse_request_settings(payload)
+        method_settings = parse_canny_lanpaint_settings(payload)
         if settings.method != FLUX_CANNY_LANPAINT_METHOD:
             raise WorkerInputError(
                 "The FLUX-Canny service requires method='flux_canny_lanpaint'."
@@ -498,10 +594,20 @@ class FluxCannyLanPaintService:
             "canny_control_start",
             stage="input",
             message="Preparing Canny control image.",
-            metadata={"control_source": control_source_name},
+            metadata={
+                "control_source": control_source_name,
+                "low_threshold": method_settings.canny_low_threshold,
+                "high_threshold": method_settings.canny_high_threshold,
+                "blur_radius": method_settings.canny_blur_radius,
+            },
         )
         control_started = time.perf_counter()
-        canny_control = make_canny_control(control_source)
+        canny_control = make_canny_control(
+            control_source,
+            low_threshold=method_settings.canny_low_threshold,
+            high_threshold=method_settings.canny_high_threshold,
+            blur_radius=method_settings.canny_blur_radius,
+        )
         control_seconds = time.perf_counter() - control_started
         reporter.emit(
             "canny_control_done",
@@ -509,9 +615,9 @@ class FluxCannyLanPaintService:
             message="Canny control image prepared.",
             metadata={
                 "control_source": control_source_name,
-                "low_threshold": CANNY_LOW_THRESHOLD,
-                "high_threshold": CANNY_HIGH_THRESHOLD,
-                "blur_radius": CANNY_BLUR_RADIUS,
+                "low_threshold": method_settings.canny_low_threshold,
+                "high_threshold": method_settings.canny_high_threshold,
+                "blur_radius": method_settings.canny_blur_radius,
                 "elapsed_seconds": control_seconds,
             },
         )
@@ -567,11 +673,11 @@ class FluxCannyLanPaintService:
 
         lanpaint = LanPaint(
             Model=model,
-            NSteps=LANPAINT_INNER_STEPS,
-            Friction=LANPAINT_FRICTION,
-            Lambda=LANPAINT_LAMBDA,
-            Beta=LANPAINT_BETA,
-            StepSize=LANPAINT_STEP_SIZE,
+            NSteps=method_settings.lanpaint_inner_steps,
+            Friction=method_settings.lanpaint_friction,
+            Lambda=method_settings.lanpaint_lambda,
+            Beta=method_settings.lanpaint_beta,
+            StepSize=method_settings.lanpaint_step_size,
             IS_FLUX=True,
             IS_FLOW=True,
         )
@@ -606,6 +712,17 @@ class FluxCannyLanPaintService:
                 "partial_noise": settings.partial_noise,
                 "guidance_scale": settings.guidance_scale,
                 "seed": settings.seed,
+                "canny_low_threshold": method_settings.canny_low_threshold,
+                "canny_high_threshold": method_settings.canny_high_threshold,
+                "canny_blur_radius": method_settings.canny_blur_radius,
+                "lanpaint_inner_steps": method_settings.lanpaint_inner_steps,
+                "lanpaint_friction": method_settings.lanpaint_friction,
+                "lanpaint_lambda": method_settings.lanpaint_lambda,
+                "lanpaint_beta": method_settings.lanpaint_beta,
+                "lanpaint_step_size": method_settings.lanpaint_step_size,
+                "lanpaint_final_outer_steps_without_inner": (
+                    method_settings.lanpaint_final_outer_steps_without_inner
+                ),
             },
         )
         step_trace: list[dict[str, Any]] = []
@@ -616,7 +733,8 @@ class FluxCannyLanPaintService:
                 flow_value = float(flow_t.item())
                 inner_steps = (
                     0
-                    if effective_steps - index <= LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER
+                    if effective_steps - index
+                    <= method_settings.lanpaint_final_outer_steps_without_inner
                     else None
                 )
                 current_times = make_current_times(
@@ -770,16 +888,16 @@ class FluxCannyLanPaintService:
                 "seed": settings.seed,
                 "mask_coverage": mask_coverage(mask),
                 "control_source": control_source_name,
-                "canny_low_threshold": CANNY_LOW_THRESHOLD,
-                "canny_high_threshold": CANNY_HIGH_THRESHOLD,
-                "canny_blur_radius": CANNY_BLUR_RADIUS,
-                "lanpaint_inner_steps": LANPAINT_INNER_STEPS,
-                "lanpaint_friction": LANPAINT_FRICTION,
-                "lanpaint_lambda": LANPAINT_LAMBDA,
-                "lanpaint_beta": LANPAINT_BETA,
-                "lanpaint_step_size": LANPAINT_STEP_SIZE,
+                "canny_low_threshold": method_settings.canny_low_threshold,
+                "canny_high_threshold": method_settings.canny_high_threshold,
+                "canny_blur_radius": method_settings.canny_blur_radius,
+                "lanpaint_inner_steps": method_settings.lanpaint_inner_steps,
+                "lanpaint_friction": method_settings.lanpaint_friction,
+                "lanpaint_lambda": method_settings.lanpaint_lambda,
+                "lanpaint_beta": method_settings.lanpaint_beta,
+                "lanpaint_step_size": method_settings.lanpaint_step_size,
                 "lanpaint_final_outer_steps_without_inner": (
-                    LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER
+                    method_settings.lanpaint_final_outer_steps_without_inner
                 ),
                 "reinject_keep_latents": True,
                 "use_transformer_cache_context": True,
@@ -799,11 +917,13 @@ __all__ = [
     "CANNY_HIGH_THRESHOLD",
     "CANNY_LOW_THRESHOLD",
     "CANNY_MODEL_ID",
+    "CannyLanPaintRequestSettings",
     "FluxCannyLanPaintAdapter",
     "FluxCannyLanPaintModelWrapper",
     "FluxCannyLanPaintService",
     "load_control_image",
     "make_canny_control",
     "mask_edit_to_lanpaint_keep",
+    "parse_canny_lanpaint_settings",
     "reinject_keep_latents",
 ]

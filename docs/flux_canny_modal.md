@@ -17,7 +17,7 @@ The Canny image contains GPLv3 LanPaint and must remain private pending licensin
 ## Prepare and Publish the LoRA
 
 ```powershell
-uv run python scripts/prepare_flux_canny_lora.py `
+uv run --extra inference python scripts/prepare_flux_canny_lora.py `
   --archive "C:\dev\kaiser-daniel\runs\metacentrum\flux_canny\flux_canny_rank16_32_64_full_runs.tgz"
 
 $env:HF_TOKEN = "<read-write token>"

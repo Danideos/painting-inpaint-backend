@@ -44,6 +44,7 @@ if _CANNY_IMAGE_CONFIGURED:
     ).env(
         {
             **CANNY_INFERENCE_ENV,
+            "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
             "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
         }
     )
@@ -52,7 +53,12 @@ else:
 web_image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_pip_install("fastapi>=0.115,<1")
-    .env({"PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF})
+    .env(
+        {
+            "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
+            "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
+        }
+    )
 )
 
 

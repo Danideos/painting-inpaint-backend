@@ -30,22 +30,27 @@ app = modal.App(APP_NAME)
 model_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 canny_model_volume = modal.Volume.from_name(CANNY_VOLUME_NAME, create_if_missing=True)
 _BACKEND_IMAGE_REF = backend_image_ref()
-_CANNY_IMAGE_REF = canny_backend_image_ref()
+_CANNY_IMAGE_REF = canny_backend_image_ref(required=False)
+_CANNY_IMAGE_CONFIGURED = _CANNY_IMAGE_REF is not None
+_CANNY_IMAGE_EFFECTIVE_REF = _CANNY_IMAGE_REF or _BACKEND_IMAGE_REF
 inference_image = modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
     {
         **INFERENCE_ENV,
         "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
     }
 )
-canny_inference_image = modal.Image.from_registry(
-    _CANNY_IMAGE_REF,
-    secret=modal.Secret.from_name(REGISTRY_SECRET_NAME),
-).env(
-    {
-        **CANNY_INFERENCE_ENV,
-        "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_REF,
-    }
-)
+if _CANNY_IMAGE_CONFIGURED:
+    canny_inference_image = modal.Image.from_registry(
+        _CANNY_IMAGE_EFFECTIVE_REF,
+        secret=modal.Secret.from_name(REGISTRY_SECRET_NAME),
+    ).env(
+        {
+            **CANNY_INFERENCE_ENV,
+            "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
+        }
+    )
+else:
+    canny_inference_image = inference_image
 web_image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_pip_install("fastapi>=0.115,<1")
@@ -146,12 +151,17 @@ class FluxCannyLanPaintModalBackend:
 
     @modal.enter()
     def enter(self) -> None:
-        from painting_inpaint_backend.core.canny_lanpaint import FluxCannyLanPaintService
-
         started = time.perf_counter()
         self.service = None
         self.enter_error = None
         try:
+            if not _CANNY_IMAGE_CONFIGURED:
+                raise RuntimeError(
+                    "PAINTING_INPAINT_CANNY_IMAGE must contain an immutable Canny image "
+                    "tag before invoking method='flux_canny_lanpaint'."
+                )
+            from painting_inpaint_backend.core.canny_lanpaint import FluxCannyLanPaintService
+
             self.service = FluxCannyLanPaintService()
         except Exception as exc:
             self.enter_error = safe_remote_error(exc, stage="container_initialization")

@@ -53,6 +53,11 @@ def test_backend_image_accepts_commit_tag(monkeypatch):
 
 
 def test_canny_image_requires_immutable_reference(monkeypatch):
+    monkeypatch.delenv("PAINTING_INPAINT_CANNY_IMAGE", raising=False)
+    assert canny_backend_image_ref(required=False) is None
+    with pytest.raises(RuntimeError, match="PAINTING_INPAINT_CANNY_IMAGE"):
+        canny_backend_image_ref()
+
     image = "ghcr.io/danideos/painting-inpaint-backend-canny:" + "b" * 40
     monkeypatch.setenv("PAINTING_INPAINT_CANNY_IMAGE", image)
 

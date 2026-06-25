@@ -75,7 +75,9 @@ def backend_image_ref() -> str:
     return _immutable_image_ref("PAINTING_INPAINT_BACKEND_IMAGE")
 
 
-def canny_backend_image_ref() -> str:
+def canny_backend_image_ref(*, required: bool = True) -> str | None:
     """Return the immutable private FLUX-Canny backend image reference."""
 
+    if not required and not os.environ.get("PAINTING_INPAINT_CANNY_IMAGE", "").strip():
+        return None
     return _immutable_image_ref("PAINTING_INPAINT_CANNY_IMAGE")

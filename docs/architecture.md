@@ -36,13 +36,13 @@ dedicated bearer key, emits an immediate queued event, keeps the connection aliv
 SSE comment heartbeats, and forwards shared progress events from the GPU method. It has
 no model weights, GPU, warm-container setting, or duplicated inference logic.
 
-Fill uses `PAINTING_INPAINT_BACKEND_IMAGE`. Canny uses the private
-`PAINTING_INPAINT_CANNY_IMAGE` plus the `painting-inpaint-ghcr` registry secret. Both
-references must use immutable commit tags or digests.
+Fill uses `PAINTING_INPAINT_BACKEND_IMAGE`. Canny uses
+`PAINTING_INPAINT_CANNY_IMAGE`. Both references must use immutable commit tags or
+digests.
 
 ## Dependency Ownership
 
 `pyproject.toml` is the only dependency declaration and `uv.lock` is its resolved lock.
-The public Fill image exports `inference` and `runpod`. The private Canny image exports
-`inference` and the pinned GPLv3 `canny` extra. Modal local tooling uses `modal`. There is
-no standalone `requirements.txt`.
+The Fill image exports `inference` and `runpod`. The Canny image exports `inference`
+and the pinned GPLv3 `canny` extra. Modal local tooling uses `modal`. There is no
+standalone `requirements.txt`.

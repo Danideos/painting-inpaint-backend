@@ -19,7 +19,6 @@ from .config import (
     INFERENCE_ENV,
     MAX_HTTP_REQUEST_MB,
     MODELS_DIR,
-    REGISTRY_SECRET_NAME,
     VOLUME_NAME,
     backend_image_ref,
     canny_backend_image_ref,
@@ -42,7 +41,6 @@ inference_image = modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
 if _CANNY_IMAGE_CONFIGURED:
     canny_inference_image = modal.Image.from_registry(
         _CANNY_IMAGE_EFFECTIVE_REF,
-        secret=modal.Secret.from_name(REGISTRY_SECRET_NAME),
     ).env(
         {
             **CANNY_INFERENCE_ENV,

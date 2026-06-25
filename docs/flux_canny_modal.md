@@ -10,9 +10,10 @@ remote client is not changed until the staged backend passes acceptance.
 - LoRA repository: private `danideos/durer-flux-canny-lora`
 - LanPaint: 1.5.3 at commit `ba4bb687f1e48dc1f1bb2e8d7c90516bba4e2a3c`
 - Modal Volume: `flux-canny-models`
-- Private image: `ghcr.io/danideos/painting-inpaint-backend-canny:<sha>`
+- Public image: `ghcr.io/danideos/painting-inpaint-backend-canny:<sha>`
 
-The Canny image contains GPLv3 LanPaint and must remain private pending licensing review.
+The Canny image contains GPLv3 LanPaint; keep the licensing note in
+`THIRD_PARTY_NOTICES.md` current when changing that dependency.
 
 ## Prepare and Publish the LoRA
 
@@ -26,18 +27,6 @@ Remove-Item Env:HF_TOKEN
 ```
 
 Record the returned immutable Hugging Face commit SHA.
-
-## Registry Authentication
-
-Create a fine-grained GitHub token with read access to the private Canny package, then:
-
-```powershell
-uv run modal secret create --force painting-inpaint-ghcr `
-  "REGISTRY_USERNAME=Danideos" `
-  "REGISTRY_PASSWORD=<read-packages token>"
-```
-
-Do not place the token in Git or command output captured in documentation.
 
 ## Populate the Canny Volume
 

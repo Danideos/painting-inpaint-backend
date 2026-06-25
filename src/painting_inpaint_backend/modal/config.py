@@ -12,7 +12,6 @@ CANNY_VOLUME_NAME = "flux-canny-models"
 HF_SECRET_NAME = "huggingface-secret"
 API_SECRET_NAME = "painting-inpaint-restoration-api"
 API_SECRET_KEY = "RESTORATION_API_KEY"
-REGISTRY_SECRET_NAME = "painting-inpaint-ghcr"
 HTTP_HEARTBEAT_SECONDS = 15.0
 MAX_HTTP_REQUEST_MB = 45
 
@@ -76,7 +75,7 @@ def backend_image_ref() -> str:
 
 
 def canny_backend_image_ref(*, required: bool = True) -> str | None:
-    """Return the immutable private FLUX-Canny backend image reference."""
+    """Return the immutable FLUX-Canny backend image reference."""
 
     if not required and not os.environ.get("PAINTING_INPAINT_CANNY_IMAGE", "").strip():
         return None

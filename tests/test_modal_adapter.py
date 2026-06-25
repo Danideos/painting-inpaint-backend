@@ -89,9 +89,7 @@ def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_worker
     assert "InferenceService" in source
     assert "FluxCannyLanPaintModalBackend" in source
     assert "FluxCannyLanPaintService" in source
-    assert "painting-inpaint-ghcr" in (
-        ROOT / "src" / "painting_inpaint_backend" / "modal" / "config.py"
-    ).read_text(encoding="utf-8")
+    assert "painting-inpaint-ghcr" not in source
 
 
 @pytest.mark.parametrize(

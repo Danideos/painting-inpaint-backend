@@ -84,16 +84,16 @@ Model: /models/black-forest-labs/FLUX.1-Fill-dev
 LoRA: /models/danideos/durer-flux-fill-lora
 ```
 
-The optional Canny method uses separate private resources:
+The optional Canny method uses separate resources:
 
 ```text
 Volume: flux-canny-models
 Model: /models/black-forest-labs/FLUX.1-Canny-dev
 LoRA: /models/danideos/durer-flux-canny-lora
-Image: ghcr.io/danideos/painting-inpaint-backend-canny:<sha>
+Public image: ghcr.io/danideos/painting-inpaint-backend-canny:<sha>
 ```
 
-See `docs/flux_canny_modal.md` for private-image, Volume, and staging instructions.
+See `docs/flux_canny_modal.md` for Canny image, Volume, and staging instructions.
 
 Set the backend image to an immutable 40-character commit tag:
 

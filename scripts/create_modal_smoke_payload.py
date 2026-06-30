@@ -31,7 +31,7 @@ def main() -> int:
     parser.add_argument("--size", type=int, default=512)
     parser.add_argument(
         "--method",
-        choices=("flux_fill", "flux_canny_lanpaint"),
+        choices=("flux_fill", "flux_canny_lanpaint", "flux_canny_fill"),
         default="flux_fill",
     )
     parser.add_argument("--include-control-image", action="store_true")

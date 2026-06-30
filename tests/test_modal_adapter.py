@@ -8,6 +8,9 @@ import pytest
 from painting_inpaint_backend.modal.boundary import json_response, safe_remote_error
 from painting_inpaint_backend.modal.config import (
     CANNY_INFERENCE_ENV,
+    HYBRID_CANNY_MODELS_DIR,
+    HYBRID_FILL_MODELS_DIR,
+    HYBRID_INFERENCE_ENV,
     INFERENCE_ENV,
     backend_image_ref,
     canny_backend_image_ref,
@@ -73,6 +76,12 @@ def test_modal_paths_are_posix_even_on_windows():
     assert CANNY_INFERENCE_ENV["LORA_PATH"].startswith("/models/")
     assert "\\" not in CANNY_INFERENCE_ENV["MODEL_PATH"]
     assert "\\" not in CANNY_INFERENCE_ENV["LORA_PATH"]
+    assert HYBRID_INFERENCE_ENV["CANNY_MODEL_PATH"].startswith("/models/canny/")
+    assert HYBRID_INFERENCE_ENV["FILL_MODEL_PATH"].startswith("/models/fill/")
+    assert "\\" not in HYBRID_INFERENCE_ENV["CANNY_MODEL_PATH"]
+    assert "\\" not in HYBRID_INFERENCE_ENV["FILL_MODEL_PATH"]
+    assert str(HYBRID_CANNY_MODELS_DIR) == "/models/canny"
+    assert str(HYBRID_FILL_MODELS_DIR) == "/models/fill"
 
 
 def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_workers():
@@ -89,6 +98,8 @@ def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_worker
     assert "InferenceService" in source
     assert "FluxCannyLanPaintModalBackend" in source
     assert "FluxCannyLanPaintService" in source
+    assert "FluxCannyFillModalBackend" in source
+    assert "FluxCannyFillService" in source
     assert "painting-inpaint-ghcr" not in source
 
 

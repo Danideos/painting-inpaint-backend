@@ -7,6 +7,11 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from painting_inpaint_backend.core.canny_fill import (
+    CANNY_FILL_DEFAULT_FILL_PARTIAL_NOISE,
+    FluxCannyFillService,
+    parse_canny_fill_settings,
+)
 from painting_inpaint_backend.core.canny_lanpaint import (
     CANNY_HIGH_THRESHOLD,
     CANNY_LOW_THRESHOLD,
@@ -34,6 +39,7 @@ from painting_inpaint_backend.core.methods import normalize_method
 def test_method_defaults_to_fill_and_accepts_canny():
     assert normalize_method() == "flux_fill"
     assert normalize_method("flux_canny_lanpaint") == "flux_canny_lanpaint"
+    assert normalize_method("flux_canny_fill") == "flux_canny_fill"
     with pytest.raises(ValueError, match="method must be one of"):
         normalize_method("unknown")
 
@@ -62,6 +68,8 @@ def test_fill_service_rejects_canny_method_before_model_loading():
         InferenceService().run(
             {"prompt": "DURER_RESTO", "method": "flux_canny_lanpaint"}
         )
+    with pytest.raises(WorkerInputError, match="FLUX Fill service"):
+        InferenceService().run({"prompt": "DURER_RESTO", "method": "flux_canny_fill"})
 
 
 def test_control_image_falls_back_to_input_and_accepts_explicit_base64():
@@ -212,3 +220,120 @@ def test_canny_lanpaint_request_settings_accept_overrides():
 def test_canny_lanpaint_request_settings_reject_invalid_values(payload, message):
     with pytest.raises(WorkerInputError, match=message):
         parse_canny_lanpaint_settings(payload)
+
+
+def test_canny_fill_settings_default_to_full_canny_then_partial_fill():
+    settings = parse_canny_fill_settings(
+        {
+            "prompt": "DURER_RESTO",
+            "method": "flux_canny_fill",
+            "num_inference_steps": 30,
+        }
+    )
+
+    assert settings.canny_prompt == "DURER_RESTO"
+    assert settings.fill_prompt == "DURER_RESTO"
+    assert settings.canny_partial_noise == 1.0
+    assert settings.fill_partial_noise == CANNY_FILL_DEFAULT_FILL_PARTIAL_NOISE
+    assert settings.canny_guidance_scale == 1.5
+    assert settings.fill_guidance_scale == 30.0
+    assert settings.canny_num_inference_steps == 30
+    assert settings.fill_num_inference_steps == 30
+
+
+def test_canny_fill_accepts_stage_specific_overrides():
+    settings = parse_canny_fill_settings(
+        {
+            "prompt": "DURER_RESTO",
+            "method": "flux_canny_fill",
+            "canny_prompt": "DURER_RESTO canny",
+            "fill_prompt": "DURER_RESTO fill",
+            "canny_num_inference_steps": "20",
+            "fill_num_inference_steps": "12",
+            "canny_guidance_scale": "1.25",
+            "fill_guidance_scale": "22",
+            "canny_lora_scale": "0.8",
+            "fill_lora_scale": "0.6",
+            "fill_partial_noise": "0.25",
+            "canny_low_threshold": "40",
+            "canny_high_threshold": "120",
+        }
+    )
+
+    assert settings.canny_prompt == "DURER_RESTO canny"
+    assert settings.fill_prompt == "DURER_RESTO fill"
+    assert settings.canny_num_inference_steps == 20
+    assert settings.fill_num_inference_steps == 12
+    assert settings.canny_guidance_scale == 1.25
+    assert settings.fill_guidance_scale == 22.0
+    assert settings.canny_lora_scale == 0.8
+    assert settings.fill_lora_scale == 0.6
+    assert settings.fill_partial_noise == 0.25
+    assert settings.canny_low_threshold == 40
+    assert settings.canny_high_threshold == 120
+
+
+class _FakeStageService:
+    def __init__(self, color: str, *, method_model: str) -> None:
+        self.calls: list[dict] = []
+        self.color = color
+        self.method_model = method_model
+
+    def run(self, payload, *, reporter=None):
+        self.calls.append(dict(payload))
+        image = Image.new("RGB", (4, 4), self.color)
+        return {
+            "image_base64": image_to_base64(image),
+            "output_format": payload.get("output_format", "png"),
+            "width": 4,
+            "height": 4,
+            "mask_convention": "white = inpaint/edit, black = preserve",
+            "timings": {"stage_seconds": 1.0},
+            "gpu_memory": {"peak_allocated_mb": 10.0},
+            "model": {"method": self.method_model},
+            "lora": {"loaded": True},
+            "inference_settings": {
+                "control_source": payload.get("control_image_base64") and "request_control_image"
+                or "input_image"
+            },
+            "schedule_debug": {"steps": payload.get("num_inference_steps")},
+            "latent_init_debug": {},
+            "outside_mask_changed_after_hard_composite": False,
+        }
+
+
+def test_canny_fill_orchestrates_canny_then_fill_without_leaking_intermediate_base64():
+    canny = _FakeStageService("blue", method_model="flux_canny_lanpaint")
+    fill = _FakeStageService("green", method_model="flux_fill")
+    service = FluxCannyFillService(canny_service=canny, fill_service=fill)
+    image = Image.new("RGB", (4, 4), "red")
+    mask = Image.new("L", (4, 4), 255)
+
+    output = service.run(
+        {
+            "method": "flux_canny_fill",
+            "prompt": "DURER_RESTO",
+            "image_base64": image_to_base64(image),
+            "mask_base64": image_to_base64(mask),
+            "seed": 123,
+            "num_inference_steps": 30,
+            "fill_partial_noise": 0.25,
+            "fill_lora_scale": 0.7,
+            "canny_lora_scale": 0.9,
+        }
+    )
+
+    assert canny.calls[0]["method"] == "flux_canny_lanpaint"
+    assert canny.calls[0]["partial_noise"] == 1.0
+    assert canny.calls[0]["guidance_scale"] == 1.5
+    assert canny.calls[0]["lora_scale"] == 0.9
+    assert fill.calls[0]["method"] == "flux_fill"
+    assert fill.calls[0]["partial_noise"] == 0.25
+    assert fill.calls[0]["guidance_scale"] == 30.0
+    assert fill.calls[0]["lora_scale"] == 0.7
+    assert fill.calls[0]["image_base64"] != canny.calls[0]["image_base64"]
+    assert output["model"]["method"] == "flux_canny_fill"
+    assert output["inference_settings"]["method"] == "flux_canny_fill"
+    assert output["inference_settings"]["canny"]["lora_scale"] == 0.9
+    assert output["inference_settings"]["fill"]["partial_noise"] == 0.25
+    assert "image_base64" not in output["hybrid_intermediate"]

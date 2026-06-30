@@ -1,7 +1,9 @@
 # FLUX-Canny/LanPaint Modal Rollout
 
-This method is Modal-only in its first release. RunPod remains FLUX Fill only, and the
-remote client is not changed until the staged backend passes acceptance.
+This work is Modal-only in its first release. RunPod remains FLUX Fill only.
+The preferred client-facing method is `flux_canny_fill`, which runs full
+FLUX-Canny/LanPaint first and then refines that intermediate image with FLUX Fill.
+The direct `flux_canny_lanpaint` route remains available for staging and diagnostics.
 
 ## Selected Artifacts
 
@@ -54,17 +56,17 @@ $env:PAINTING_INPAINT_CANNY_IMAGE = `
 uv run modal deploy -m painting_inpaint_backend.modal.app
 ```
 
-Create a Canny smoke payload and invoke the direct streaming method:
+Create a hybrid smoke payload and invoke the direct streaming method:
 
 ```powershell
 uv run python scripts/create_modal_smoke_payload.py `
-  --method flux_canny_lanpaint `
+  --method flux_canny_fill `
   --include-control-image `
-  --out generated/modal_canny_smoke_payload.json
+  --out generated/modal_canny_fill_smoke_payload.json
 
 uv run python scripts/smoke_modal_inference.py `
-  --payload generated/modal_canny_smoke_payload.json `
-  --out-dir local_runs/modal_canny_512 `
+  --payload generated/modal_canny_fill_smoke_payload.json `
+  --out-dir local_runs/modal_canny_fill_512 `
   --stream
 ```
 

@@ -11,9 +11,14 @@ from pathlib import Path
 
 import modal
 
-from painting_inpaint_backend.core.methods import FLUX_CANNY_LANPAINT_METHOD, normalize_method
+from painting_inpaint_backend.core.methods import (
+    FLUX_CANNY_FILL_METHOD,
+    FLUX_CANNY_LANPAINT_METHOD,
+    normalize_method,
+)
 from painting_inpaint_backend.core.progress import sanitize_for_progress
 from painting_inpaint_backend.modal.app import (
+    FluxCannyFillModalBackend,
     FluxCannyLanPaintModalBackend,
     FluxFillModalBackend,
     app,
@@ -35,11 +40,12 @@ def main() -> int:
     timings_path = args.out_dir / "modal_timings.json"
     args.out_dir.mkdir(parents=True, exist_ok=True)
     method = normalize_method(payload.get("method"))
-    backend = (
-        FluxCannyLanPaintModalBackend()
-        if method == FLUX_CANNY_LANPAINT_METHOD
-        else FluxFillModalBackend()
-    )
+    if method == FLUX_CANNY_FILL_METHOD:
+        backend = FluxCannyFillModalBackend()
+    elif method == FLUX_CANNY_LANPAINT_METHOD:
+        backend = FluxCannyLanPaintModalBackend()
+    else:
+        backend = FluxFillModalBackend()
 
     with modal.enable_output(), app.run():
         if args.stream:

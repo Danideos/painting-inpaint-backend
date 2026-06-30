@@ -27,7 +27,10 @@ The logical request is a JSON object:
 Supported methods:
 
 - `flux_fill` is the backward-compatible default when `method` is omitted.
-- `flux_canny_lanpaint` selects the Modal FLUX-Canny/LanPaint service.
+- `flux_canny_fill` selects the Modal hybrid service: FLUX-Canny/LanPaint first,
+  then FLUX Fill refinement from the Canny result.
+- `flux_canny_lanpaint` is an internal/staging route for direct Canny/LanPaint
+  validation and is not the preferred client-facing method.
 
 FLUX-Canny accepts optional `control_image_base64`. When omitted, the backend derives
 the Canny control from `image_base64`. The control image must match the input size.
@@ -49,6 +52,12 @@ Defaults:
 - `max_sequence_length`: `512`
 
 Mask convention: white means edit/inpaint, black means preserve.
+
+For `flux_canny_fill`, the first stage defaults to full Canny/LanPaint inference and
+the second stage defaults to Fill refinement with `fill_partial_noise=0.5`. Stage-specific
+overrides use `canny_*` and `fill_*` prefixes, for example `canny_guidance_scale`,
+`fill_guidance_scale`, `canny_num_inference_steps`, `fill_num_inference_steps`,
+`canny_lora_scale`, and `fill_lora_scale`.
 
 The default maximum input size is 2,073,600 pixels, allowing 1440x1440 image/mask
 pairs. `MAX_IMAGE_PIXELS` may override this deployment limit.

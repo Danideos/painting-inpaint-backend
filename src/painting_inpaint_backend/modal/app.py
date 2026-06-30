@@ -16,6 +16,9 @@ from .config import (
     CANNY_VOLUME_NAME,
     GPU_TYPE,
     HTTP_HEARTBEAT_SECONDS,
+    HYBRID_CANNY_MODELS_DIR,
+    HYBRID_FILL_MODELS_DIR,
+    HYBRID_INFERENCE_ENV,
     INFERENCE_ENV,
     MAX_HTTP_REQUEST_MB,
     MODELS_DIR,
@@ -48,8 +51,18 @@ if _CANNY_IMAGE_CONFIGURED:
             "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
         }
     )
+    hybrid_inference_image = modal.Image.from_registry(
+        _CANNY_IMAGE_EFFECTIVE_REF,
+    ).env(
+        {
+            **HYBRID_INFERENCE_ENV,
+            "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
+            "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
+        }
+    )
 else:
     canny_inference_image = inference_image
+    hybrid_inference_image = inference_image
 web_image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_pip_install("fastapi>=0.115,<1")
@@ -230,6 +243,109 @@ class FluxCannyLanPaintModalBackend:
             yield json_response(event)
 
 
+@app.cls(
+    image=hybrid_inference_image,
+    gpu=GPU_TYPE,
+    volumes={
+        str(HYBRID_FILL_MODELS_DIR): model_volume,
+        str(HYBRID_CANNY_MODELS_DIR): canny_model_volume,
+    },
+    timeout=2400,
+    scaledown_window=2,
+    include_source=False,
+)
+class FluxCannyFillModalBackend:
+    """Scale-to-zero hybrid service: FLUX-Canny/LanPaint then FLUX Fill."""
+
+    @modal.enter()
+    def enter(self) -> None:
+        started = time.perf_counter()
+        self.service = None
+        self.enter_error = None
+        try:
+            if not _CANNY_IMAGE_CONFIGURED:
+                raise RuntimeError(
+                    "PAINTING_INPAINT_CANNY_IMAGE must contain an immutable Canny image "
+                    "tag before invoking method='flux_canny_fill'."
+                )
+            from painting_inpaint_backend.core.canny_fill import FluxCannyFillService
+
+            canny_env = {
+                "MODEL_PATH": os.environ["CANNY_MODEL_PATH"],
+                "LORA_PATH": os.environ["CANNY_LORA_PATH"],
+                "LORA_ADAPTER_NAME": os.environ["CANNY_LORA_ADAPTER_NAME"],
+                "LORA_REQUIRED": "1",
+            }
+            fill_env = {
+                "MODEL_PATH": os.environ["FILL_MODEL_PATH"],
+                "LORA_PATH": os.environ["FILL_LORA_PATH"],
+                "LORA_ADAPTER_NAME": os.environ["FILL_LORA_ADAPTER_NAME"],
+                "LORA_REQUIRED": "1",
+            }
+            self.service = FluxCannyFillService(canny_env=canny_env, fill_env=fill_env)
+        except Exception as exc:
+            self.enter_error = safe_remote_error(exc, stage="container_initialization")
+        finally:
+            self.container_enter_seconds = time.perf_counter() - started
+
+    @modal.method()
+    def restore(self, payload: dict[str, Any]) -> str:
+        """Run one provider-neutral hybrid restoration request."""
+
+        if self.enter_error is not None:
+            return json_response({"modal_error": self.enter_error})
+        try:
+            started = time.perf_counter()
+            assert self.service is not None
+            output = self.service.run(payload)
+            timings = output.setdefault("timings", {})
+            timings["modal_container_enter_seconds"] = self.container_enter_seconds
+            timings["modal_request_seconds"] = time.perf_counter() - started
+            return json_response(output)
+        except Exception as exc:
+            return json_response(
+                {"modal_error": safe_remote_error(exc, stage="request_inference")}
+            )
+
+    @modal.method()
+    def restore_stream(self, payload: dict[str, Any], run_id: str):
+        """Yield hybrid progress events across the Modal serialization boundary."""
+
+        from painting_inpaint_backend.core.progress import ProgressReporter
+        from painting_inpaint_backend.core.streaming import stream_inference_events
+
+        if self.enter_error is not None:
+            reporter = ProgressReporter(run_id=run_id, enabled=True)
+            yield json_response(
+                reporter.error(
+                    stage="container_initialization",
+                    message=self.enter_error["error"],
+                    metadata=self.enter_error,
+                )
+            )
+            return
+
+        started = time.perf_counter()
+        assert self.service is not None
+        for event in stream_inference_events(
+            payload,
+            service=self.service,
+            run_id=run_id,
+            provider="modal",
+            received_message="Modal hybrid restoration request received.",
+            completion_message="Modal hybrid restoration completed.",
+            received_metadata={
+                "stream_progress": True,
+                "method": "flux_canny_fill",
+            },
+        ):
+            if event.get("type") == "final" and isinstance(event.get("output"), dict):
+                timings = event["output"].setdefault("timings", {})
+                timings["modal_container_enter_seconds"] = self.container_enter_seconds
+                timings["modal_request_seconds"] = time.perf_counter() - started
+            yield json_response(event)
+
+
 @app.function(
     image=web_image,
     secrets=[modal.Secret.from_name(API_SECRET_NAME)],
@@ -248,6 +364,7 @@ def restoration_api():
     @api.post("/v1/restore/stream")
     async def restore_stream_http(request: Request):
         from painting_inpaint_backend.core.methods import (
+            FLUX_CANNY_FILL_METHOD,
             FLUX_CANNY_LANPAINT_METHOD,
             normalize_method,
         )
@@ -285,7 +402,12 @@ def restoration_api():
         run_id = uuid.uuid4().hex
 
         def event_source():
-            if method == FLUX_CANNY_LANPAINT_METHOD:
+            if method == FLUX_CANNY_FILL_METHOD:
+                yield from FluxCannyFillModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == FLUX_CANNY_LANPAINT_METHOD:
                 yield from FluxCannyLanPaintModalBackend().restore_stream.remote_gen(
                     payload,
                     run_id,

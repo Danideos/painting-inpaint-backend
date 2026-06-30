@@ -241,6 +241,19 @@ def test_canny_fill_settings_default_to_full_canny_then_partial_fill():
     assert settings.fill_num_inference_steps == 30
 
 
+def test_canny_fill_accepts_empty_canny_prompt_without_changing_fill_prompt():
+    settings = parse_canny_fill_settings(
+        {
+            "prompt": "DURER_RESTO",
+            "method": "flux_canny_fill",
+            "canny_prompt": "",
+        }
+    )
+
+    assert settings.canny_prompt == ""
+    assert settings.fill_prompt == "DURER_RESTO"
+
+
 def test_canny_fill_accepts_stage_specific_overrides():
     settings = parse_canny_fill_settings(
         {

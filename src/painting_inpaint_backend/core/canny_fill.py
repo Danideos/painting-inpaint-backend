@@ -100,11 +100,17 @@ def _payload_int(payload: dict[str, Any], key: str, default: int) -> int:
     return parsed
 
 
-def _optional_prompt(payload: dict[str, Any], key: str, default: str) -> str:
+def _optional_prompt(
+    payload: dict[str, Any],
+    key: str,
+    default: str,
+    *,
+    allow_empty: bool = False,
+) -> str:
     value = payload.get(key, default)
     if not isinstance(value, str):
         raise WorkerInputError(f"{key} must be a string.")
-    if not value.strip():
+    if not allow_empty and not value.strip():
         raise WorkerInputError(f"{key} must not be empty.")
     return value
 
@@ -228,7 +234,12 @@ def parse_canny_fill_settings(payload: dict[str, Any]) -> CannyFillRequestSettin
         prompt=prompt,
         seed=seed,
         output_format=output_format,
-        canny_prompt=_optional_prompt(payload, "canny_prompt", prompt),
+        canny_prompt=_optional_prompt(
+            payload,
+            "canny_prompt",
+            prompt,
+            allow_empty=True,
+        ),
         canny_partial_noise=_parse_partial_noise(
             payload,
             "canny_partial_noise",

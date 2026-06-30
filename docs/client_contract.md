@@ -54,7 +54,7 @@ Defaults:
 Mask convention: white means edit/inpaint, black means preserve.
 
 For `flux_canny_fill`, the first stage defaults to full Canny/LanPaint inference and
-the second stage defaults to Fill refinement with `fill_partial_noise=0.5`. Stage-specific
+the second stage defaults to Fill refinement with `fill_partial_noise=0.4`. Stage-specific
 overrides use `canny_*` and `fill_*` prefixes, for example `canny_guidance_scale`,
 `fill_guidance_scale`, `canny_num_inference_steps`, `fill_num_inference_steps`,
 `canny_lora_scale`, and `fill_lora_scale`.

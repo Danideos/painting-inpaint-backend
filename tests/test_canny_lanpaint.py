@@ -149,7 +149,7 @@ def test_lanpaint_constants_match_validated_configuration():
     assert LANPAINT_FRICTION == 15.0
     assert LANPAINT_LAMBDA == 10.0
     assert LANPAINT_BETA == 1.0
-    assert LANPAINT_STEP_SIZE == 0.1
+    assert LANPAINT_STEP_SIZE == 0.2
     assert LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER == 3
 
 
@@ -235,7 +235,7 @@ def test_canny_fill_settings_default_to_full_canny_then_partial_fill():
     assert settings.fill_prompt == "DURER_RESTO"
     assert settings.canny_partial_noise == 1.0
     assert settings.fill_partial_noise == CANNY_FILL_DEFAULT_FILL_PARTIAL_NOISE
-    assert settings.canny_guidance_scale == 1.5
+    assert settings.canny_guidance_scale == 7.0
     assert settings.fill_guidance_scale == 30.0
     assert settings.canny_num_inference_steps == 30
     assert settings.fill_num_inference_steps == 30
@@ -338,7 +338,7 @@ def test_canny_fill_orchestrates_canny_then_fill_without_leaking_intermediate_ba
 
     assert canny.calls[0]["method"] == "flux_canny_lanpaint"
     assert canny.calls[0]["partial_noise"] == 1.0
-    assert canny.calls[0]["guidance_scale"] == 1.5
+    assert canny.calls[0]["guidance_scale"] == 7.0
     assert canny.calls[0]["lora_scale"] == 0.9
     assert fill.calls[0]["method"] == "flux_fill"
     assert fill.calls[0]["partial_noise"] == 0.25

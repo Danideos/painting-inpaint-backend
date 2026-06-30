@@ -27,7 +27,7 @@ from painting_inpaint_backend.core.canny_lanpaint import (
     parse_canny_lanpaint_settings,
     reinject_keep_latents,
 )
-from painting_inpaint_backend.core.image_io import image_to_base64
+from painting_inpaint_backend.core.image_io import image_from_base64, image_to_base64
 from painting_inpaint_backend.core.inference import (
     InferenceService,
     WorkerInputError,
@@ -336,4 +336,12 @@ def test_canny_fill_orchestrates_canny_then_fill_without_leaking_intermediate_ba
     assert output["inference_settings"]["method"] == "flux_canny_fill"
     assert output["inference_settings"]["canny"]["lora_scale"] == 0.9
     assert output["inference_settings"]["fill"]["partial_noise"] == 0.25
+    assert output["canny_image_base64"]
+    assert (
+        image_from_base64(output["canny_image_base64"], label="canny output").getpixel(
+            (0, 0)
+        )
+        == (0, 0, 255)
+    )
+    assert output["canny_output_format"] == "png"
     assert "image_base64" not in output["hybrid_intermediate"]

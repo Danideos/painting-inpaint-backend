@@ -493,6 +493,8 @@ class FluxCannyFillService:
 
         elapsed = time.perf_counter() - started
         output = dict(fill_output)
+        output["canny_image_base64"] = canny_intermediate_base64
+        output["canny_output_format"] = "png"
         output["timings"] = {
             "hybrid_total_seconds": elapsed,
             "canny": canny_output.get("timings", {}),

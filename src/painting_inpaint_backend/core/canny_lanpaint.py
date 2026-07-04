@@ -44,9 +44,15 @@ from .progress import ProgressReporter
 LOGGER = logging.getLogger(__name__)
 
 CANNY_MODEL_ID = "black-forest-labs/FLUX.1-Canny-dev"
+CANNY_LANPAINT_BACKEND_REVISION = "lanpaint-telea-source-v1"
+CANNY_LANPAINT_NATIVE_BACKEND_REVISION = "flux-canny-lanpaint-native-v1"
 CANNY_LOW_THRESHOLD = 75
 CANNY_HIGH_THRESHOLD = 150
 CANNY_BLUR_RADIUS = 0.0
+CANNY_INK_THRESHOLD = 245
+CANNY_BOUNDARY_FILL_RADIUS = 3.0
+CANNY_MASK_GUARD_PIXELS = 0
+LANPAINT_SOURCE_FILL_RADIUS = 3.0
 LANPAINT_INNER_STEPS = 10
 LANPAINT_FRICTION = 15.0
 LANPAINT_LAMBDA = 10.0
@@ -63,6 +69,9 @@ class CannyLanPaintRequestSettings:
     canny_low_threshold: int = CANNY_LOW_THRESHOLD
     canny_high_threshold: int = CANNY_HIGH_THRESHOLD
     canny_blur_radius: float = CANNY_BLUR_RADIUS
+    canny_ink_threshold: int = CANNY_INK_THRESHOLD
+    canny_boundary_fill_radius: float = CANNY_BOUNDARY_FILL_RADIUS
+    canny_mask_guard_pixels: int = CANNY_MASK_GUARD_PIXELS
     lanpaint_inner_steps: int = LANPAINT_INNER_STEPS
     lanpaint_friction: float = LANPAINT_FRICTION
     lanpaint_lambda: float = LANPAINT_LAMBDA
@@ -71,6 +80,8 @@ class CannyLanPaintRequestSettings:
     lanpaint_final_outer_steps_without_inner: int = (
         LANPAINT_FINAL_OUTER_STEPS_WITHOUT_INNER
     )
+    reencode_source_latent_interval: int = 0
+    canny_control_strategy: str | None = None  # None = auto; "masked_ink" = force masked_ink
 
 
 def _payload_int(payload: dict[str, Any], key: str, default: int) -> int:
@@ -109,6 +120,23 @@ def parse_canny_lanpaint_settings(payload: dict[str, Any]) -> CannyLanPaintReque
     blur = _payload_float(payload, "canny_blur_radius", CANNY_BLUR_RADIUS)
     if blur < 0:
         raise WorkerInputError("canny_blur_radius must be non-negative.")
+    ink_threshold = _payload_int(payload, "canny_ink_threshold", CANNY_INK_THRESHOLD)
+    if not 0 <= ink_threshold <= 255:
+        raise WorkerInputError("canny_ink_threshold must be between 0 and 255.")
+    boundary_fill_radius = _payload_float(
+        payload,
+        "canny_boundary_fill_radius",
+        CANNY_BOUNDARY_FILL_RADIUS,
+    )
+    if boundary_fill_radius < 0:
+        raise WorkerInputError("canny_boundary_fill_radius must be non-negative.")
+    mask_guard_pixels = _payload_int(
+        payload,
+        "canny_mask_guard_pixels",
+        CANNY_MASK_GUARD_PIXELS,
+    )
+    if mask_guard_pixels < 0:
+        raise WorkerInputError("canny_mask_guard_pixels must be non-negative.")
 
     inner_steps = _payload_int(payload, "lanpaint_inner_steps", LANPAINT_INNER_STEPS)
     if inner_steps < 0:
@@ -137,16 +165,36 @@ def parse_canny_lanpaint_settings(payload: dict[str, Any]) -> CannyLanPaintReque
     if step_size <= 0:
         raise WorkerInputError("lanpaint_step_size must be greater than 0.")
 
+    raw_interval = payload.get("reencode_source_latent_interval", None)
+    if raw_interval is None:
+        legacy = payload.get("reencode_source_latent_every_step", False)
+        reencode_interval = 1 if legacy else 0
+    else:
+        reencode_interval = int(raw_interval)
+    if reencode_interval < 0:
+        raise WorkerInputError("reencode_source_latent_interval must be non-negative.")
+
+    canny_control_strategy = payload.get("canny_control_strategy", None)
+    if canny_control_strategy is not None and canny_control_strategy not in {"masked_ink"}:
+        raise WorkerInputError(
+            "canny_control_strategy must be 'masked_ink' or omitted."
+        )
+
     return CannyLanPaintRequestSettings(
         canny_low_threshold=low,
         canny_high_threshold=high,
         canny_blur_radius=blur,
+        canny_ink_threshold=ink_threshold,
+        canny_boundary_fill_radius=boundary_fill_radius,
+        canny_mask_guard_pixels=mask_guard_pixels,
         lanpaint_inner_steps=inner_steps,
         lanpaint_friction=friction,
         lanpaint_lambda=lanpaint_lambda,
         lanpaint_beta=beta,
         lanpaint_step_size=step_size,
         lanpaint_final_outer_steps_without_inner=final_without_inner,
+        reencode_source_latent_interval=reencode_interval,
+        canny_control_strategy=canny_control_strategy,
     )
 
 
@@ -173,6 +221,194 @@ def make_canny_control(
     gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
     edges = cv2.Canny(gray, threshold1=low_threshold, threshold2=high_threshold)
     return Image.fromarray(np.stack([edges, edges, edges], axis=-1).astype(np.uint8)).convert("RGB")
+
+
+def _canny_edges(
+    image: Image.Image,
+    *,
+    low_threshold: int,
+    high_threshold: int,
+    blur_radius: float,
+) -> np.ndarray:
+    """Create a one-channel Canny edge map."""
+
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - exercised by image import smoke.
+        raise ImportError(
+            "FLUX-Canny control generation requires opencv-python-headless."
+        ) from exc
+
+    source = image.convert("RGB")
+    if blur_radius > 0:
+        source = source.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    array = np.asarray(source, dtype=np.uint8)
+    gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
+    return cv2.Canny(gray, threshold1=low_threshold, threshold2=high_threshold)
+
+
+def _erode_binary_mask(mask: Image.Image, pixels: int) -> Image.Image:
+    if pixels <= 0:
+        return binarize_mask(mask)
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - exercised by image import smoke.
+        raise ImportError(
+            "FLUX-Canny control generation requires opencv-python-headless."
+        ) from exc
+
+    mask_array = np.asarray(binarize_mask(mask), dtype=np.uint8)
+    kernel = np.ones((pixels * 2 + 1, pixels * 2 + 1), dtype=np.uint8)
+    return Image.fromarray(cv2.erode(mask_array, kernel)).convert("L")
+
+
+def _fill_excluded_region_for_canny(
+    image: Image.Image,
+    excluded_region: Image.Image,
+    *,
+    radius: float,
+) -> Image.Image:
+    if radius <= 0:
+        return image.convert("RGB")
+    try:
+        import cv2
+    except ImportError as exc:  # pragma: no cover - exercised by image import smoke.
+        raise ImportError(
+            "FLUX-Canny control generation requires opencv-python-headless."
+        ) from exc
+
+    image_array = np.asarray(image.convert("RGB"), dtype=np.uint8)
+    bgr = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
+    mask_array = np.asarray(binarize_mask(excluded_region), dtype=np.uint8)
+    filled = cv2.inpaint(bgr, mask_array, radius, cv2.INPAINT_TELEA)
+    rgb = cv2.cvtColor(filled, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(rgb).convert("RGB")
+
+
+def make_lanpaint_source_image(
+    image: Image.Image,
+    mask: Image.Image,
+    *,
+    fill_radius: float = LANPAINT_SOURCE_FILL_RADIUS,
+) -> Image.Image:
+    """Prepare a content-aware inpaint source before VAE source-latent encoding."""
+
+    source = image.convert("RGB")
+    edit_mask = binarize_mask(mask)
+    if mask_coverage(edit_mask) <= 0:
+        return source.copy()
+    if mask_coverage(edit_mask) >= 1:
+        return Image.new("RGB", source.size, (127, 127, 127))
+    if fill_radius < 0:
+        raise ValueError("fill_radius must be non-negative.")
+
+    filled = _fill_excluded_region_for_canny(source, edit_mask, radius=fill_radius)
+    return hard_composite(source, filled, edit_mask)
+
+
+def _ink_mask_from_guidance(
+    image: Image.Image,
+    mask: Image.Image,
+    *,
+    ink_threshold: int,
+) -> Image.Image:
+    gray = np.asarray(image.convert("L"), dtype=np.uint8)
+    edit_mask = np.asarray(binarize_mask(mask), dtype=np.uint8) > 0
+    ink = ((gray < ink_threshold) & edit_mask).astype(np.uint8) * 255
+    return Image.fromarray(ink).convert("L")
+
+
+def _zhang_suen_thinning(binary_image: Image.Image) -> Image.Image:
+    image = (np.asarray(binary_image.convert("L"), dtype=np.uint8) > 0).astype(np.uint8)
+
+    while True:
+        changed = False
+        for step in (0, 1):
+            padded = np.pad(image, 1, mode="constant")
+            p2 = padded[:-2, 1:-1]
+            p3 = padded[:-2, 2:]
+            p4 = padded[1:-1, 2:]
+            p5 = padded[2:, 2:]
+            p6 = padded[2:, 1:-1]
+            p7 = padded[2:, :-2]
+            p8 = padded[1:-1, :-2]
+            p9 = padded[:-2, :-2]
+
+            neighbor_count = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
+            transitions = (
+                ((p2 == 0) & (p3 == 1)).astype(np.uint8)
+                + ((p3 == 0) & (p4 == 1)).astype(np.uint8)
+                + ((p4 == 0) & (p5 == 1)).astype(np.uint8)
+                + ((p5 == 0) & (p6 == 1)).astype(np.uint8)
+                + ((p6 == 0) & (p7 == 1)).astype(np.uint8)
+                + ((p7 == 0) & (p8 == 1)).astype(np.uint8)
+                + ((p8 == 0) & (p9 == 1)).astype(np.uint8)
+                + ((p9 == 0) & (p2 == 1)).astype(np.uint8)
+            )
+
+            if step == 0:
+                condition_a = p2 * p4 * p6 == 0
+                condition_b = p4 * p6 * p8 == 0
+            else:
+                condition_a = p2 * p4 * p8 == 0
+                condition_b = p2 * p6 * p8 == 0
+
+            remove = (
+                (image == 1)
+                & (neighbor_count >= 2)
+                & (neighbor_count <= 6)
+                & (transitions == 1)
+                & condition_a
+                & condition_b
+            )
+            if np.any(remove):
+                image[remove] = 0
+                changed = True
+
+        if not changed:
+            break
+
+    return Image.fromarray(image * 255).convert("L")
+
+
+def make_masked_canny_control(
+    image: Image.Image,
+    mask: Image.Image,
+    *,
+    low_threshold: int = CANNY_LOW_THRESHOLD,
+    high_threshold: int = CANNY_HIGH_THRESHOLD,
+    blur_radius: float = CANNY_BLUR_RADIUS,
+    ink_threshold: int = CANNY_INK_THRESHOLD,
+    boundary_fill_radius: float = CANNY_BOUNDARY_FILL_RADIUS,
+    mask_guard_pixels: int = CANNY_MASK_GUARD_PIXELS,
+) -> Image.Image:
+    """Create Canny control from submitted image + edit mask without mask-border edges."""
+
+    source = image.convert("RGB")
+    edit_mask = binarize_mask(mask)
+    outside_mask = Image.eval(edit_mask, lambda value: 255 - value)
+    inside_core = _erode_binary_mask(edit_mask, mask_guard_pixels)
+    outside_core = _erode_binary_mask(outside_mask, mask_guard_pixels)
+
+    outside_source = _fill_excluded_region_for_canny(
+        source,
+        edit_mask,
+        radius=boundary_fill_radius,
+    )
+    outside_edges = _canny_edges(
+        outside_source,
+        low_threshold=low_threshold,
+        high_threshold=high_threshold,
+        blur_radius=blur_radius,
+    )
+    outside = np.where(np.asarray(outside_core, dtype=np.uint8) > 0, outside_edges, 0)
+
+    ink = _ink_mask_from_guidance(source, edit_mask, ink_threshold=ink_threshold)
+    thinned_ink = _zhang_suen_thinning(ink)
+    inside = np.where(np.asarray(inside_core, dtype=np.uint8) > 0, np.asarray(thinned_ink), 0)
+
+    combined = np.maximum(outside, inside).astype(np.uint8)
+    return Image.fromarray(np.stack([combined, combined, combined], axis=-1)).convert("RGB")
 
 
 def mask_edit_to_lanpaint_keep(mask_edit: Image.Image) -> Image.Image:
@@ -418,6 +654,48 @@ class FluxCannyLanPaintAdapter:
             "RGB"
         )
 
+    def reencode_source_from_prediction(
+        self,
+        x0: Any,
+        original_image: Image.Image,
+        mask_edit: Image.Image,
+    ) -> Any:
+        """Decode x0, composite original keep-region pixels back in, re-encode.
+
+        Using latent_dist.mean rather than .sample keeps each re-encode
+        deterministic — no generator state consumed, no stochastic jitter
+        between steps.
+        """
+        import torch
+
+        decoded = self.decode_latents(x0)
+        composited = hard_composite(
+            original_image.convert("RGB"),
+            decoded,
+            binarize_mask(mask_edit),
+        )
+        image_tensor = self.pipe.image_processor.preprocess(
+            composited,
+            height=self.height,
+            width=self.width,
+        ).to(device=self.device, dtype=self.pipe.vae.dtype)
+        with torch.inference_mode():
+            encoded = self.pipe.vae.encode(image_tensor).latent_dist.mean
+        encoded = (encoded - self.pipe.vae.config.shift_factor) * (
+            self.pipe.vae.config.scaling_factor
+        )
+        batch_size, channels = encoded.shape[:2]
+        latent_height = 2 * (self.height // (self.pipe.vae_scale_factor * 2))
+        latent_width = 2 * (self.width // (self.pipe.vae_scale_factor * 2))
+        self.source_latent = self.pipe._pack_latents(
+            encoded.to(self.dtype),
+            batch_size,
+            channels,
+            latent_height,
+            latent_width,
+        )
+        return self.source_latent
+
 
 class FluxCannyLanPaintModelWrapper:
     """Minimal model interface consumed by official LanPaint."""
@@ -543,17 +821,27 @@ def load_control_image(
 class FluxCannyLanPaintService:
     """Lazy-loading Modal service for FLUX-Canny/LanPaint restoration."""
 
+    method: str = FLUX_CANNY_LANPAINT_METHOD
+    native_lanpaint: bool = False
     _loaded: LoadedPipeline | None = None
+
+    @property
+    def backend_revision(self) -> str:
+        if self.native_lanpaint:
+            return CANNY_LANPAINT_NATIVE_BACKEND_REVISION
+        return CANNY_LANPAINT_BACKEND_REVISION
 
     def get_loaded(self, *, reporter: ProgressReporter | None = None) -> LoadedPipeline:
         if self._loaded is None:
             self._loaded = load_flux_canny_pipeline(reporter=reporter)
+            self._loaded.model["method"] = self.method
+            self._loaded.model["backend_revision"] = self.backend_revision
         elif reporter is not None:
             reporter.emit(
                 "model_load_start",
                 stage="model",
                 message="Reusing cached FLUX-Canny pipeline.",
-                metadata={"cached": True, "method": FLUX_CANNY_LANPAINT_METHOD},
+                metadata={"cached": True, "method": self.method},
             )
             reporter.emit(
                 "model_load_done",
@@ -572,10 +860,17 @@ class FluxCannyLanPaintService:
         reporter = reporter or ProgressReporter(enabled=False)
         settings = parse_request_settings(payload)
         method_settings = parse_canny_lanpaint_settings(payload)
-        if settings.method != FLUX_CANNY_LANPAINT_METHOD:
+        if settings.method != self.method:
             raise WorkerInputError(
-                "The FLUX-Canny service requires method='flux_canny_lanpaint'."
+                f"The FLUX-Canny service requires method={self.method!r}."
             )
+        backend_revision = self.backend_revision
+        if self.native_lanpaint:
+            latent_source_strategy = "raw_input_image"
+            latent_source_fill_radius = None
+        else:
+            latent_source_strategy = "telea_filled_source"
+            latent_source_fill_radius = LANPAINT_SOURCE_FILL_RADIUS
         reporter.emit("input_decode_start", stage="input", message="Decoding request inputs.")
         image, mask = load_request_images(payload)
         control_source, control_source_name = load_control_image(payload, fallback=image)
@@ -588,6 +883,7 @@ class FluxCannyLanPaintService:
                 "image_height": image.height,
                 "mask_coverage": mask_coverage(mask),
                 "control_source": control_source_name,
+                "backend_revision": backend_revision,
             },
         )
         reporter.emit(
@@ -596,18 +892,48 @@ class FluxCannyLanPaintService:
             message="Preparing Canny control image.",
             metadata={
                 "control_source": control_source_name,
+                "backend_revision": backend_revision,
                 "low_threshold": method_settings.canny_low_threshold,
                 "high_threshold": method_settings.canny_high_threshold,
                 "blur_radius": method_settings.canny_blur_radius,
+                "ink_threshold": method_settings.canny_ink_threshold,
+                "boundary_fill_radius": method_settings.canny_boundary_fill_radius,
+                "mask_guard_pixels": method_settings.canny_mask_guard_pixels,
             },
         )
         control_started = time.perf_counter()
-        canny_control = make_canny_control(
-            control_source,
-            low_threshold=method_settings.canny_low_threshold,
-            high_threshold=method_settings.canny_high_threshold,
-            blur_radius=method_settings.canny_blur_radius,
+        use_masked_ink = (
+            method_settings.canny_control_strategy == "masked_ink"
+            or (not self.native_lanpaint and control_source_name == "input_image")
         )
+        if use_masked_ink:
+            canny_control = make_masked_canny_control(
+                control_source,
+                mask,
+                low_threshold=method_settings.canny_low_threshold,
+                high_threshold=method_settings.canny_high_threshold,
+                blur_radius=method_settings.canny_blur_radius,
+                ink_threshold=method_settings.canny_ink_threshold,
+                boundary_fill_radius=method_settings.canny_boundary_fill_radius,
+                mask_guard_pixels=method_settings.canny_mask_guard_pixels,
+            )
+            control_strategy = "masked_ink_composite"
+        elif self.native_lanpaint:
+            canny_control = make_canny_control(
+                control_source,
+                low_threshold=method_settings.canny_low_threshold,
+                high_threshold=method_settings.canny_high_threshold,
+                blur_radius=method_settings.canny_blur_radius,
+            )
+            control_strategy = "plain_canny_control"
+        else:
+            canny_control = make_canny_control(
+                control_source,
+                low_threshold=method_settings.canny_low_threshold,
+                high_threshold=method_settings.canny_high_threshold,
+                blur_radius=method_settings.canny_blur_radius,
+            )
+            control_strategy = "explicit_control_image_canny"
         control_seconds = time.perf_counter() - control_started
         reporter.emit(
             "canny_control_done",
@@ -615,9 +941,14 @@ class FluxCannyLanPaintService:
             message="Canny control image prepared.",
             metadata={
                 "control_source": control_source_name,
+                "backend_revision": backend_revision,
                 "low_threshold": method_settings.canny_low_threshold,
                 "high_threshold": method_settings.canny_high_threshold,
                 "blur_radius": method_settings.canny_blur_radius,
+                "ink_threshold": method_settings.canny_ink_threshold,
+                "boundary_fill_radius": method_settings.canny_boundary_fill_radius,
+                "mask_guard_pixels": method_settings.canny_mask_guard_pixels,
+                "control_strategy": control_strategy,
                 "elapsed_seconds": control_seconds,
             },
         )
@@ -647,6 +978,14 @@ class FluxCannyLanPaintService:
         torch = loaded.torch
         adapter = FluxCannyLanPaintAdapter(loaded.pipe)
         adapter.width, adapter.height = image.size
+        latent_source_image = (
+            image.convert("RGB")
+            if self.native_lanpaint
+            else make_lanpaint_source_image(
+                image,
+                mask,
+            )
+        )
         generator = torch.Generator(device=adapter.device)
         if settings.seed is not None:
             generator.manual_seed(settings.seed)
@@ -660,7 +999,7 @@ class FluxCannyLanPaintService:
             settings.prompt,
             max_sequence_length=settings.max_sequence_length,
         )
-        source_latent = adapter.encode_source_latents(image, generator)
+        source_latent = adapter.encode_source_latents(latent_source_image, generator)
         control_latent = adapter.encode_control_latents(canny_control, generator)
         keep_mask = mask_edit_to_lanpaint_keep(mask)
         keep_latent, edit_latent = adapter.mask_keep_to_latents(keep_mask)
@@ -707,6 +1046,7 @@ class FluxCannyLanPaintService:
             progress={"current": 0, "total": effective_steps},
             metadata={
                 "method": settings.method,
+                "backend_revision": backend_revision,
                 "requested_num_inference_steps": settings.num_inference_steps,
                 "effective_num_inference_steps": effective_steps,
                 "partial_noise": settings.partial_noise,
@@ -715,6 +1055,11 @@ class FluxCannyLanPaintService:
                 "canny_low_threshold": method_settings.canny_low_threshold,
                 "canny_high_threshold": method_settings.canny_high_threshold,
                 "canny_blur_radius": method_settings.canny_blur_radius,
+                "canny_ink_threshold": method_settings.canny_ink_threshold,
+                "canny_boundary_fill_radius": method_settings.canny_boundary_fill_radius,
+                "canny_mask_guard_pixels": method_settings.canny_mask_guard_pixels,
+                "latent_source_strategy": latent_source_strategy,
+                "latent_source_fill_radius": latent_source_fill_radius,
                 "lanpaint_inner_steps": method_settings.lanpaint_inner_steps,
                 "lanpaint_friction": method_settings.lanpaint_friction,
                 "lanpaint_lambda": method_settings.lanpaint_lambda,
@@ -723,9 +1068,13 @@ class FluxCannyLanPaintService:
                 "lanpaint_final_outer_steps_without_inner": (
                     method_settings.lanpaint_final_outer_steps_without_inner
                 ),
+                "reencode_source_latent_interval": (
+                    method_settings.reencode_source_latent_interval
+                ),
             },
         )
         step_trace: list[dict[str, Any]] = []
+        reencode_seconds_total = 0.0
         with torch.inference_mode():
             for index, (timestep, flow_t) in enumerate(
                 zip(active_timesteps, active_flow_times, strict=True)
@@ -769,6 +1118,14 @@ class FluxCannyLanPaintService:
                     latents,
                     return_dict=False,
                 )[0].to(source_latent.dtype)
+                reencode_step_seconds = 0.0
+                interval = method_settings.reencode_source_latent_interval
+                if interval > 0 and (index + 1) % interval == 0:
+                    reencode_started = time.perf_counter()
+                    source_latent = adapter.reencode_source_from_prediction(x0, image, mask)
+                    reencode_step_seconds = time.perf_counter() - reencode_started
+                    reencode_seconds_total += reencode_step_seconds
+
                 if index < effective_steps - 1:
                     next_flow = active_flow_times[index + 1 : index + 2].reshape(1, 1, 1).to(
                         device=adapter.device,
@@ -786,6 +1143,7 @@ class FluxCannyLanPaintService:
                     "timestep": _json_timestep(timestep),
                     "flow_t": flow_value,
                     "lanpaint_inner_steps_override": inner_steps,
+                    "reencode_seconds": reencode_step_seconds,
                 }
                 step_trace.append(step_record)
                 reporter.emit(
@@ -864,6 +1222,7 @@ class FluxCannyLanPaintService:
                 **loaded.timings,
                 "canny_control_seconds": control_seconds,
                 "inference_seconds": inference_seconds,
+                "reencode_source_latent_seconds": reencode_seconds_total,
             },
             "gpu_memory": gpu_memory,
             "model": loaded.model,
@@ -877,6 +1236,7 @@ class FluxCannyLanPaintService:
             },
             "inference_settings": {
                 "method": settings.method,
+                "backend_revision": backend_revision,
                 "prompt": settings.prompt,
                 "negative_prompt": settings.negative_prompt,
                 "negative_prompt_passed_to_pipeline": False,
@@ -888,9 +1248,15 @@ class FluxCannyLanPaintService:
                 "seed": settings.seed,
                 "mask_coverage": mask_coverage(mask),
                 "control_source": control_source_name,
+                "control_strategy": control_strategy,
                 "canny_low_threshold": method_settings.canny_low_threshold,
                 "canny_high_threshold": method_settings.canny_high_threshold,
                 "canny_blur_radius": method_settings.canny_blur_radius,
+                "canny_ink_threshold": method_settings.canny_ink_threshold,
+                "canny_boundary_fill_radius": method_settings.canny_boundary_fill_radius,
+                "canny_mask_guard_pixels": method_settings.canny_mask_guard_pixels,
+                "latent_source_strategy": latent_source_strategy,
+                "latent_source_fill_radius": latent_source_fill_radius,
                 "lanpaint_inner_steps": method_settings.lanpaint_inner_steps,
                 "lanpaint_friction": method_settings.lanpaint_friction,
                 "lanpaint_lambda": method_settings.lanpaint_lambda,
@@ -915,6 +1281,8 @@ class FluxCannyLanPaintService:
 
 __all__ = [
     "CANNY_HIGH_THRESHOLD",
+    "CANNY_LANPAINT_BACKEND_REVISION",
+    "CANNY_LANPAINT_NATIVE_BACKEND_REVISION",
     "CANNY_LOW_THRESHOLD",
     "CANNY_MODEL_ID",
     "CannyLanPaintRequestSettings",
@@ -923,6 +1291,8 @@ __all__ = [
     "FluxCannyLanPaintService",
     "load_control_image",
     "make_canny_control",
+    "make_lanpaint_source_image",
+    "make_masked_canny_control",
     "mask_edit_to_lanpaint_keep",
     "parse_canny_lanpaint_settings",
     "reinject_keep_latents",

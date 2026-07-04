@@ -231,7 +231,11 @@ def parse_request_settings(payload: dict[str, Any]) -> RequestSettings:
         partial_noise = normalize_partial_noise(payload.get("partial_noise"))
     except ValueError as exc:
         raise WorkerInputError(str(exc)) from exc
-    default_guidance = 1.5 if method == "flux_canny_lanpaint" else 30.0
+    default_guidance = (
+        1.5
+        if method in {"flux_canny_lanpaint", "flux_canny_lanpaint_native"}
+        else 30.0
+    )
     guidance_scale = _optional_float(payload, "guidance_scale", default_guidance)
     if guidance_scale < 0:
         raise WorkerInputError("guidance_scale must be non-negative.")

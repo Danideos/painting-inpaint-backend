@@ -100,6 +100,7 @@ def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_worker
     assert "FluxCannyLanPaintService" in source
     assert "FluxCannyFillModalBackend" in source
     assert "FluxCannyFillService" in source
+    assert "FluxCannyLanPaintNativeModalBackend" in source
     assert "painting-inpaint-ghcr" not in source
 
 

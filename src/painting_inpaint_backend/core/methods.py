@@ -6,10 +6,20 @@ from typing import Any, Literal
 
 FLUX_FILL_METHOD = "flux_fill"
 FLUX_CANNY_LANPAINT_METHOD = "flux_canny_lanpaint"
+FLUX_CANNY_LANPAINT_NATIVE_METHOD = "flux_canny_lanpaint_native"
 FLUX_CANNY_FILL_METHOD = "flux_canny_fill"
+FLUX_FILL_CANNY_NATIVE_METHOD = "flux_fill_canny_native"
+FLUX_FILL_CANNY_FILL_METHOD = "flux_fill_canny_fill"
 DEFAULT_METHOD = FLUX_FILL_METHOD
 
-RestorationMethod = Literal["flux_fill", "flux_canny_lanpaint", "flux_canny_fill"]
+RestorationMethod = Literal[
+    "flux_fill",
+    "flux_canny_lanpaint",
+    "flux_canny_lanpaint_native",
+    "flux_canny_fill",
+    "flux_fill_canny_native",
+    "flux_fill_canny_fill",
+]
 
 
 def normalize_method(value: Any = None) -> RestorationMethod:
@@ -20,10 +30,18 @@ def normalize_method(value: Any = None) -> RestorationMethod:
         return FLUX_FILL_METHOD
     if normalized == FLUX_CANNY_LANPAINT_METHOD:
         return FLUX_CANNY_LANPAINT_METHOD
+    if normalized == FLUX_CANNY_LANPAINT_NATIVE_METHOD:
+        return FLUX_CANNY_LANPAINT_NATIVE_METHOD
     if normalized == FLUX_CANNY_FILL_METHOD:
         return FLUX_CANNY_FILL_METHOD
+    if normalized == FLUX_FILL_CANNY_NATIVE_METHOD:
+        return FLUX_FILL_CANNY_NATIVE_METHOD
+    if normalized == FLUX_FILL_CANNY_FILL_METHOD:
+        return FLUX_FILL_CANNY_FILL_METHOD
     raise ValueError(
-        "method must be one of: flux_fill, flux_canny_lanpaint, flux_canny_fill; "
+        "method must be one of: flux_fill, flux_canny_lanpaint, "
+        "flux_canny_lanpaint_native, flux_canny_fill, flux_fill_canny_native, "
+        "flux_fill_canny_fill; "
         f"got {value!r}."
     )
 
@@ -32,6 +50,9 @@ __all__ = [
     "DEFAULT_METHOD",
     "FLUX_CANNY_FILL_METHOD",
     "FLUX_CANNY_LANPAINT_METHOD",
+    "FLUX_CANNY_LANPAINT_NATIVE_METHOD",
+    "FLUX_FILL_CANNY_FILL_METHOD",
+    "FLUX_FILL_CANNY_NATIVE_METHOD",
     "FLUX_FILL_METHOD",
     "RestorationMethod",
     "normalize_method",

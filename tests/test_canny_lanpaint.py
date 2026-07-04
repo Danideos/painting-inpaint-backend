@@ -23,6 +23,8 @@ from painting_inpaint_backend.core.canny_lanpaint import (
     LANPAINT_STEP_SIZE,
     load_control_image,
     make_canny_control,
+    make_lanpaint_source_image,
+    make_masked_canny_control,
     mask_edit_to_lanpaint_keep,
     parse_canny_lanpaint_settings,
     reinject_keep_latents,
@@ -39,6 +41,7 @@ from painting_inpaint_backend.core.methods import normalize_method
 def test_method_defaults_to_fill_and_accepts_canny():
     assert normalize_method() == "flux_fill"
     assert normalize_method("flux_canny_lanpaint") == "flux_canny_lanpaint"
+    assert normalize_method("flux_canny_lanpaint_native") == "flux_canny_lanpaint_native"
     assert normalize_method("flux_canny_fill") == "flux_canny_fill"
     with pytest.raises(ValueError, match="method must be one of"):
         normalize_method("unknown")
@@ -142,6 +145,78 @@ def test_canny_generation_uses_validated_thresholds(monkeypatch):
         "color_code": 7,
         "thresholds": (CANNY_LOW_THRESHOLD, CANNY_HIGH_THRESHOLD),
     }
+
+
+def test_masked_canny_control_thins_thick_drawn_lines_inside_mask():
+    pytest.importorskip("cv2")
+    image = Image.new("RGB", (32, 32), "white")
+    mask = Image.new("L", (32, 32), 0)
+    for y in range(8, 24):
+        for x in range(8, 24):
+            mask.putpixel((x, y), 255)
+        for dx in range(-3, 4):
+            image.putpixel((16 + dx, y), (0, 0, 0))
+
+    control = make_masked_canny_control(
+        image,
+        mask,
+        low_threshold=100,
+        high_threshold=200,
+        boundary_fill_radius=0,
+    )
+    edges = np.asarray(control.convert("L"))
+
+    assert np.count_nonzero(edges[8:24, 13:20]) >= 8
+    assert all(np.count_nonzero(edges[y, 13:20]) <= 2 for y in range(8, 24))
+
+
+def test_masked_canny_control_avoids_mask_rectangle_edges():
+    pytest.importorskip("cv2")
+    image = Image.new("RGB", (32, 32), "gray")
+    mask = Image.new("L", (32, 32), 0)
+    for y in range(8, 24):
+        for x in range(8, 24):
+            mask.putpixel((x, y), 255)
+            image.putpixel((x, y), (255, 255, 255))
+
+    control = make_masked_canny_control(
+        image,
+        mask,
+        low_threshold=100,
+        high_threshold=200,
+        boundary_fill_radius=3,
+    )
+    edges = np.asarray(control.convert("L"))
+
+    border_pixels = [
+        *edges[7, 8:24].tolist(),
+        *edges[24, 8:24].tolist(),
+        *edges[8:24, 7].tolist(),
+        *edges[8:24, 24].tolist(),
+    ]
+    assert max(border_pixels) == 0
+
+
+def test_lanpaint_source_image_uses_telea_fill_and_preserves_outside():
+    pytest.importorskip("cv2")
+    image = Image.new("RGB", (32, 32), (64, 64, 64))
+    mask = Image.new("L", (32, 32), 0)
+    for y in range(8, 24):
+        for x in range(8, 24):
+            mask.putpixel((x, y), 255)
+            image.putpixel((x, y), (255, 255, 255))
+    for y in range(10, 22):
+        image.putpixel((16, y), (0, 0, 0))
+
+    source = make_lanpaint_source_image(image, mask)
+    source_array = np.asarray(source)
+    image_array = np.asarray(image)
+    mask_array = np.asarray(mask) > 0
+
+    assert np.array_equal(source_array[~mask_array], image_array[~mask_array])
+    assert source_array[mask_array].mean() < 128
+    assert not np.any(np.all(source_array[mask_array] == [255, 255, 255], axis=1))
+    assert not np.any(np.all(source_array[mask_array] == [0, 0, 0], axis=1))
 
 
 def test_lanpaint_constants_match_validated_configuration():

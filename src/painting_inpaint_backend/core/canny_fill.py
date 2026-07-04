@@ -27,6 +27,9 @@ from .inference import InferenceService, WorkerInputError
 from .methods import (
     FLUX_CANNY_FILL_METHOD,
     FLUX_CANNY_LANPAINT_METHOD,
+    FLUX_CANNY_LANPAINT_NATIVE_METHOD,
+    FLUX_FILL_CANNY_FILL_METHOD,
+    FLUX_FILL_CANNY_NATIVE_METHOD,
     FLUX_FILL_METHOD,
     normalize_method,
 )
@@ -69,9 +72,23 @@ class CannyFillRequestSettings:
     fill_num_inference_steps: int
     fill_lora_scale: float
     fill_max_sequence_length: int
+    # Per-stage overrides for flux_fill_canny_fill (fall back to fill_* if not set)
+    fill_pre_prompt: str
+    fill_pre_negative_prompt: str
+    fill_pre_partial_noise: float
+    fill_pre_guidance_scale: float
+    fill_pre_num_inference_steps: int
+    fill_pre_lora_scale: float
+    fill_post_prompt: str
+    fill_post_negative_prompt: str
+    fill_post_partial_noise: float
+    fill_post_guidance_scale: float
+    fill_post_num_inference_steps: int
+    fill_post_lora_scale: float
     canny_low_threshold: int
     canny_high_threshold: int
     canny_blur_radius: float
+    canny_control_strategy: str | None
     lanpaint_inner_steps: int
     lanpaint_friction: float
     lanpaint_lambda: float
@@ -173,15 +190,21 @@ def _parse_thresholds(payload: dict[str, Any]) -> tuple[int, int]:
     return low, high
 
 
-def parse_canny_fill_settings(payload: dict[str, Any]) -> CannyFillRequestSettings:
+def parse_canny_fill_settings(
+    payload: dict[str, Any],
+    method: str | None = None,
+) -> CannyFillRequestSettings:
     """Parse the provider-neutral hybrid method controls."""
 
     try:
-        method = normalize_method(payload.get("method"))
+        parsed_method = normalize_method(method or payload.get("method"))
     except ValueError as exc:
         raise WorkerInputError(str(exc)) from exc
-    if method != FLUX_CANNY_FILL_METHOD:
-        raise WorkerInputError("The hybrid service requires method='flux_canny_fill'.")
+    if parsed_method not in {FLUX_CANNY_FILL_METHOD, FLUX_FILL_CANNY_NATIVE_METHOD, FLUX_FILL_CANNY_FILL_METHOD}:
+        raise WorkerInputError(
+            "The hybrid service requires method='flux_canny_fill', "
+            "'flux_fill_canny_native', or 'flux_fill_canny_fill'."
+        )
 
     if "prompt" not in payload:
         raise WorkerInputError("prompt is required.")
@@ -200,6 +223,10 @@ def parse_canny_fill_settings(payload: dict[str, Any]) -> CannyFillRequestSettin
     canny_blur = _payload_float(payload, "canny_blur_radius", CANNY_BLUR_RADIUS)
     if canny_blur < 0:
         raise WorkerInputError("canny_blur_radius must be non-negative.")
+
+    canny_control_strategy = payload.get("canny_control_strategy", None)
+    if canny_control_strategy is not None and canny_control_strategy not in {"masked_ink"}:
+        raise WorkerInputError("canny_control_strategy must be 'masked_ink' or omitted.")
 
     lanpaint_inner_steps = _payload_int(payload, "lanpaint_inner_steps", LANPAINT_INNER_STEPS)
     if lanpaint_inner_steps < 0:
@@ -229,6 +256,19 @@ def parse_canny_fill_settings(payload: dict[str, Any]) -> CannyFillRequestSettin
         raise WorkerInputError("lanpaint_step_size must be greater than 0.")
 
     fill_partial_default = payload.get("partial_noise", CANNY_FILL_DEFAULT_FILL_PARTIAL_NOISE)
+
+    fill_prompt = _optional_prompt(payload, "fill_prompt", prompt)
+    fill_negative_prompt = str(
+        payload.get("fill_negative_prompt", payload.get("negative_prompt", ""))
+    )
+    fill_partial_noise = _parse_partial_noise(payload, "fill_partial_noise", fill_partial_default)
+    fill_guidance_scale = _optional_non_negative_float(
+        payload, "fill_guidance_scale", CANNY_FILL_DEFAULT_FILL_GUIDANCE_SCALE
+    )
+    fill_num_inference_steps = _optional_positive_int(
+        payload, "fill_num_inference_steps", shared_steps or CANNY_FILL_DEFAULT_FILL_STEPS
+    )
+    fill_lora_scale = _optional_non_negative_float(payload, "fill_lora_scale", shared_lora_scale)
 
     return CannyFillRequestSettings(
         prompt=prompt,
@@ -265,38 +305,53 @@ def parse_canny_fill_settings(payload: dict[str, Any]) -> CannyFillRequestSettin
             "canny_max_sequence_length",
             shared_max_sequence_length,
         ),
-        fill_prompt=_optional_prompt(payload, "fill_prompt", prompt),
-        fill_negative_prompt=str(
-            payload.get("fill_negative_prompt", payload.get("negative_prompt", ""))
-        ),
-        fill_partial_noise=_parse_partial_noise(
-            payload,
-            "fill_partial_noise",
-            fill_partial_default,
-        ),
-        fill_guidance_scale=_optional_non_negative_float(
-            payload,
-            "fill_guidance_scale",
-            CANNY_FILL_DEFAULT_FILL_GUIDANCE_SCALE,
-        ),
-        fill_num_inference_steps=_optional_positive_int(
-            payload,
-            "fill_num_inference_steps",
-            shared_steps or CANNY_FILL_DEFAULT_FILL_STEPS,
-        ),
-        fill_lora_scale=_optional_non_negative_float(
-            payload,
-            "fill_lora_scale",
-            shared_lora_scale,
-        ),
+        fill_prompt=fill_prompt,
+        fill_negative_prompt=fill_negative_prompt,
+        fill_partial_noise=fill_partial_noise,
+        fill_guidance_scale=fill_guidance_scale,
+        fill_num_inference_steps=fill_num_inference_steps,
+        fill_lora_scale=fill_lora_scale,
         fill_max_sequence_length=_optional_positive_int(
             payload,
             "fill_max_sequence_length",
             shared_max_sequence_length,
         ),
+        fill_pre_prompt=_optional_prompt(payload, "fill_pre_prompt", fill_prompt),
+        fill_pre_negative_prompt=str(
+            payload.get("fill_pre_negative_prompt", fill_negative_prompt)
+        ),
+        fill_pre_partial_noise=_parse_partial_noise(
+            payload, "fill_pre_partial_noise", fill_partial_noise
+        ),
+        fill_pre_guidance_scale=_optional_non_negative_float(
+            payload, "fill_pre_guidance_scale", fill_guidance_scale
+        ),
+        fill_pre_num_inference_steps=_optional_positive_int(
+            payload, "fill_pre_num_inference_steps", fill_num_inference_steps
+        ),
+        fill_pre_lora_scale=_optional_non_negative_float(
+            payload, "fill_pre_lora_scale", fill_lora_scale
+        ),
+        fill_post_prompt=_optional_prompt(payload, "fill_post_prompt", fill_prompt),
+        fill_post_negative_prompt=str(
+            payload.get("fill_post_negative_prompt", fill_negative_prompt)
+        ),
+        fill_post_partial_noise=_parse_partial_noise(
+            payload, "fill_post_partial_noise", fill_partial_noise
+        ),
+        fill_post_guidance_scale=_optional_non_negative_float(
+            payload, "fill_post_guidance_scale", fill_guidance_scale
+        ),
+        fill_post_num_inference_steps=_optional_positive_int(
+            payload, "fill_post_num_inference_steps", fill_num_inference_steps
+        ),
+        fill_post_lora_scale=_optional_non_negative_float(
+            payload, "fill_post_lora_scale", fill_lora_scale
+        ),
         canny_low_threshold=canny_low,
         canny_high_threshold=canny_high,
         canny_blur_radius=canny_blur,
+        canny_control_strategy=canny_control_strategy,
         lanpaint_inner_steps=lanpaint_inner_steps,
         lanpaint_friction=lanpaint_friction,
         lanpaint_lambda=lanpaint_lambda,
@@ -367,7 +422,14 @@ def _canny_payload(
 def _fill_payload(
     payload: dict[str, Any],
     settings: CannyFillRequestSettings,
-    canny_image_base64: str,
+    image_base64: str,
+    *,
+    prompt: str | None = None,
+    negative_prompt: str | None = None,
+    partial_noise: float | None = None,
+    guidance_scale: float | None = None,
+    num_inference_steps: int | None = None,
+    lora_scale: float | None = None,
 ) -> dict[str, Any]:
     fill_payload = dict(payload)
     for key in (
@@ -394,19 +456,41 @@ def _fill_payload(
         "fill_num_inference_steps",
         "fill_max_sequence_length",
         "fill_lora_scale",
+        "fill_pre_prompt",
+        "fill_pre_negative_prompt",
+        "fill_pre_partial_noise",
+        "fill_pre_guidance_scale",
+        "fill_pre_num_inference_steps",
+        "fill_pre_lora_scale",
+        "fill_post_prompt",
+        "fill_post_negative_prompt",
+        "fill_post_partial_noise",
+        "fill_post_guidance_scale",
+        "fill_post_num_inference_steps",
+        "fill_post_lora_scale",
     ):
         fill_payload.pop(key, None)
     fill_payload.update(
         {
             "method": FLUX_FILL_METHOD,
-            "image_base64": canny_image_base64,
-            "prompt": settings.fill_prompt,
-            "negative_prompt": settings.fill_negative_prompt,
-            "partial_noise": settings.fill_partial_noise,
-            "guidance_scale": settings.fill_guidance_scale,
-            "num_inference_steps": settings.fill_num_inference_steps,
+            "image_base64": image_base64,
+            "prompt": prompt if prompt is not None else settings.fill_prompt,
+            "negative_prompt": (
+                negative_prompt if negative_prompt is not None else settings.fill_negative_prompt
+            ),
+            "partial_noise": (
+                partial_noise if partial_noise is not None else settings.fill_partial_noise
+            ),
+            "guidance_scale": (
+                guidance_scale if guidance_scale is not None else settings.fill_guidance_scale
+            ),
+            "num_inference_steps": (
+                num_inference_steps
+                if num_inference_steps is not None
+                else settings.fill_num_inference_steps
+            ),
             "max_sequence_length": settings.fill_max_sequence_length,
-            "lora_scale": settings.fill_lora_scale,
+            "lora_scale": lora_scale if lora_scale is not None else settings.fill_lora_scale,
             "output_format": settings.output_format,
         }
     )
@@ -542,6 +626,18 @@ class FluxCannyFillService:
                 "control_source": canny_output.get("inference_settings", {}).get(
                     "control_source"
                 ),
+                "backend_revision": canny_output.get("inference_settings", {}).get(
+                    "backend_revision"
+                ),
+                "control_strategy": canny_output.get("inference_settings", {}).get(
+                    "control_strategy"
+                ),
+                "latent_source_strategy": canny_output.get("inference_settings", {}).get(
+                    "latent_source_strategy"
+                ),
+                "latent_source_fill_radius": canny_output.get("inference_settings", {}).get(
+                    "latent_source_fill_radius"
+                ),
             },
             "fill": {
                 "prompt": settings.fill_prompt,
@@ -586,6 +682,410 @@ class FluxCannyFillService:
         return output
 
 
+class FluxFillCannyNativeService:
+    """Run FLUX Fill to pre-fill the mask, then FLUX-Canny/LanPaint native using the filled image as source."""
+
+    def __init__(
+        self,
+        *,
+        canny_env: dict[str, str | None] | None = None,
+        fill_env: dict[str, str | None] | None = None,
+        canny_service: FluxCannyLanPaintService | None = None,
+        fill_service: InferenceService | None = None,
+    ) -> None:
+        self.canny_env = {**_clear_remote_lora_env(), **(canny_env or {})}
+        self.fill_env = {**_clear_remote_lora_env(), **(fill_env or {})}
+        self.canny_service = canny_service or FluxCannyLanPaintService(
+            method=FLUX_CANNY_LANPAINT_NATIVE_METHOD,
+            native_lanpaint=True,
+        )
+        self.fill_service = fill_service or InferenceService()
+        self._lock = threading.Lock()
+
+    def run(
+        self,
+        payload: dict[str, Any],
+        *,
+        reporter: ProgressReporter | None = None,
+    ) -> dict[str, Any]:
+        reporter = reporter or ProgressReporter(enabled=False)
+        settings = parse_canny_fill_settings(payload, method=FLUX_FILL_CANNY_NATIVE_METHOD)
+        started = time.perf_counter()
+
+        original_image_base64 = payload.get("image_base64", "")
+
+        with self._lock:
+            reporter.emit(
+                "hybrid_fill_start",
+                stage="inference",
+                message="Starting FLUX Fill pre-fill stage.",
+                metadata={"method": FLUX_FILL_CANNY_NATIVE_METHOD},
+            )
+            with _temporary_environ(self.fill_env):
+                fill_output = self.fill_service.run(
+                    _fill_payload(payload, settings, original_image_base64),
+                    reporter=reporter,
+                )
+            reporter.emit(
+                "hybrid_fill_done",
+                stage="inference",
+                message="FLUX Fill pre-fill stage completed.",
+                metadata={
+                    "width": fill_output.get("width"),
+                    "height": fill_output.get("height"),
+                    "outside_mask_changed_after_hard_composite": fill_output.get(
+                        "outside_mask_changed_after_hard_composite"
+                    ),
+                },
+            )
+
+            fill_intermediate_base64 = str(fill_output["image_base64"])
+
+            reporter.emit(
+                "hybrid_canny_start",
+                stage="inference",
+                message="Starting FLUX-Canny/LanPaint native stage.",
+                metadata={
+                    "method": FLUX_FILL_CANNY_NATIVE_METHOD,
+                    "canny_partial_noise": settings.canny_partial_noise,
+                    "canny_num_inference_steps": settings.canny_num_inference_steps,
+                },
+            )
+            with _temporary_environ(self.canny_env):
+                canny_output = self.canny_service.run(
+                    _fill_canny_native_payload(payload, settings, fill_intermediate_base64, original_image_base64),
+                    reporter=reporter,
+                )
+            reporter.emit(
+                "hybrid_canny_done",
+                stage="inference",
+                message="FLUX-Canny/LanPaint native stage completed.",
+                metadata={
+                    "width": canny_output.get("width"),
+                    "height": canny_output.get("height"),
+                    "outside_mask_changed_after_hard_composite": canny_output.get(
+                        "outside_mask_changed_after_hard_composite"
+                    ),
+                },
+            )
+
+        elapsed = time.perf_counter() - started
+        output = dict(canny_output)
+        output["fill_intermediate_base64"] = fill_intermediate_base64
+        output["fill_intermediate_format"] = "png"
+        output["timings"] = {
+            "hybrid_total_seconds": elapsed,
+            "fill": fill_output.get("timings", {}),
+            "canny": canny_output.get("timings", {}),
+        }
+        output["gpu_memory"] = {
+            "fill": fill_output.get("gpu_memory", {}),
+            "canny": canny_output.get("gpu_memory", {}),
+        }
+        output["model"] = {
+            "method": FLUX_FILL_CANNY_NATIVE_METHOD,
+            "fill": fill_output.get("model", {}),
+            "canny": canny_output.get("model", {}),
+        }
+        output["lora"] = {
+            "fill": fill_output.get("lora", {}),
+            "canny": canny_output.get("lora", {}),
+        }
+        output["inference_settings"] = {
+            "method": FLUX_FILL_CANNY_NATIVE_METHOD,
+            "prompt": settings.prompt,
+            "seed": settings.seed,
+            "output_format": settings.output_format,
+            "fill": {
+                "prompt": settings.fill_prompt,
+                "negative_prompt": settings.fill_negative_prompt,
+                "partial_noise": settings.fill_partial_noise,
+                "guidance_scale": settings.fill_guidance_scale,
+                "num_inference_steps": settings.fill_num_inference_steps,
+                "max_sequence_length": settings.fill_max_sequence_length,
+                "lora_scale": settings.fill_lora_scale,
+            },
+            "canny": {
+                "prompt": settings.canny_prompt,
+                "partial_noise": settings.canny_partial_noise,
+                "guidance_scale": settings.canny_guidance_scale,
+                "num_inference_steps": settings.canny_num_inference_steps,
+                "max_sequence_length": settings.canny_max_sequence_length,
+                "lora_scale": settings.canny_lora_scale,
+                "low_threshold": settings.canny_low_threshold,
+                "high_threshold": settings.canny_high_threshold,
+                "blur_radius": settings.canny_blur_radius,
+                "backend_revision": canny_output.get("inference_settings", {}).get("backend_revision"),
+                "latent_source_strategy": canny_output.get("inference_settings", {}).get("latent_source_strategy"),
+            },
+            "lanpaint": {
+                "inner_steps": settings.lanpaint_inner_steps,
+                "friction": settings.lanpaint_friction,
+                "lambda": settings.lanpaint_lambda,
+                "beta": settings.lanpaint_beta,
+                "step_size": settings.lanpaint_step_size,
+                "final_outer_steps_without_inner": settings.lanpaint_final_outer_steps_without_inner,
+            },
+        }
+        output["outside_mask_changed_after_hard_composite"] = canny_output.get(
+            "outside_mask_changed_after_hard_composite"
+        )
+        output.pop("run_report", None)
+        return output
+
+
+class FluxFillCannyFillService:
+    """Three-stage: FLUX Fill pre-fill → FLUX-Canny/LanPaint native → FLUX Fill refinement."""
+
+    def __init__(
+        self,
+        *,
+        canny_env: dict[str, str | None] | None = None,
+        fill_env: dict[str, str | None] | None = None,
+        canny_service: FluxCannyLanPaintService | None = None,
+        fill_service: InferenceService | None = None,
+    ) -> None:
+        self.canny_env = {**_clear_remote_lora_env(), **(canny_env or {})}
+        self.fill_env = {**_clear_remote_lora_env(), **(fill_env or {})}
+        self.canny_service = canny_service or FluxCannyLanPaintService(
+            method=FLUX_CANNY_LANPAINT_NATIVE_METHOD,
+            native_lanpaint=True,
+        )
+        self.fill_service = fill_service or InferenceService()
+        self._lock = threading.Lock()
+
+    def run(
+        self,
+        payload: dict[str, Any],
+        *,
+        reporter: ProgressReporter | None = None,
+    ) -> dict[str, Any]:
+        reporter = reporter or ProgressReporter(enabled=False)
+        settings = parse_canny_fill_settings(payload, method=FLUX_FILL_CANNY_FILL_METHOD)
+        started = time.perf_counter()
+
+        original_image_base64 = payload.get("image_base64", "")
+
+        with self._lock:
+            # Stage 1: Fill to replace white/missing content with plausible pixels.
+            reporter.emit(
+                "hybrid_fill_pre_start",
+                stage="inference",
+                message="Starting FLUX Fill pre-fill stage.",
+                metadata={"method": FLUX_FILL_CANNY_FILL_METHOD, "stage": 1},
+            )
+            with _temporary_environ(self.fill_env):
+                fill_pre_output = self.fill_service.run(
+                    _fill_payload(
+                        payload,
+                        settings,
+                        original_image_base64,
+                        prompt=settings.fill_pre_prompt,
+                        negative_prompt=settings.fill_pre_negative_prompt,
+                        partial_noise=settings.fill_pre_partial_noise,
+                        guidance_scale=settings.fill_pre_guidance_scale,
+                        num_inference_steps=settings.fill_pre_num_inference_steps,
+                        lora_scale=settings.fill_pre_lora_scale,
+                    ),
+                    reporter=reporter,
+                )
+            reporter.emit(
+                "hybrid_fill_pre_done",
+                stage="inference",
+                message="FLUX Fill pre-fill stage completed.",
+                metadata={
+                    "width": fill_pre_output.get("width"),
+                    "height": fill_pre_output.get("height"),
+                },
+            )
+
+            fill_pre_base64 = str(fill_pre_output["image_base64"])
+
+            # Stage 2: Canny/LanPaint native using the pre-filled image as source latent.
+            reporter.emit(
+                "hybrid_canny_start",
+                stage="inference",
+                message="Starting FLUX-Canny/LanPaint native stage.",
+                metadata={"method": FLUX_FILL_CANNY_FILL_METHOD, "stage": 2},
+            )
+            with _temporary_environ(self.canny_env):
+                canny_output = self.canny_service.run(
+                    _fill_canny_native_payload(payload, settings, fill_pre_base64, original_image_base64),
+                    reporter=reporter,
+                )
+            reporter.emit(
+                "hybrid_canny_done",
+                stage="inference",
+                message="FLUX-Canny/LanPaint native stage completed.",
+                metadata={
+                    "width": canny_output.get("width"),
+                    "height": canny_output.get("height"),
+                },
+            )
+
+            canny_intermediate_base64 = str(canny_output["image_base64"])
+
+            # Stage 3: Fill refinement on the Canny result.
+            reporter.emit(
+                "hybrid_fill_post_start",
+                stage="inference",
+                message="Starting FLUX Fill refinement stage.",
+                metadata={"method": FLUX_FILL_CANNY_FILL_METHOD, "stage": 3},
+            )
+            with _temporary_environ(self.fill_env):
+                fill_post_output = self.fill_service.run(
+                    _fill_payload(
+                        payload,
+                        settings,
+                        canny_intermediate_base64,
+                        prompt=settings.fill_post_prompt,
+                        negative_prompt=settings.fill_post_negative_prompt,
+                        partial_noise=settings.fill_post_partial_noise,
+                        guidance_scale=settings.fill_post_guidance_scale,
+                        num_inference_steps=settings.fill_post_num_inference_steps,
+                        lora_scale=settings.fill_post_lora_scale,
+                    ),
+                    reporter=reporter,
+                )
+            reporter.emit(
+                "hybrid_fill_post_done",
+                stage="inference",
+                message="FLUX Fill refinement stage completed.",
+                metadata={
+                    "width": fill_post_output.get("width"),
+                    "height": fill_post_output.get("height"),
+                    "outside_mask_changed_after_hard_composite": fill_post_output.get(
+                        "outside_mask_changed_after_hard_composite"
+                    ),
+                },
+            )
+
+        elapsed = time.perf_counter() - started
+        output = dict(fill_post_output)
+        output["fill_pre_image_base64"] = fill_pre_base64
+        output["canny_image_base64"] = canny_intermediate_base64
+        output["timings"] = {
+            "hybrid_total_seconds": elapsed,
+            "fill_pre": fill_pre_output.get("timings", {}),
+            "canny": canny_output.get("timings", {}),
+            "fill_post": fill_post_output.get("timings", {}),
+        }
+        output["gpu_memory"] = {
+            "fill_pre": fill_pre_output.get("gpu_memory", {}),
+            "canny": canny_output.get("gpu_memory", {}),
+            "fill_post": fill_post_output.get("gpu_memory", {}),
+        }
+        output["model"] = {
+            "method": FLUX_FILL_CANNY_FILL_METHOD,
+            "fill_pre": fill_pre_output.get("model", {}),
+            "canny": canny_output.get("model", {}),
+            "fill_post": fill_post_output.get("model", {}),
+        }
+        output["lora"] = {
+            "fill_pre": fill_pre_output.get("lora", {}),
+            "canny": canny_output.get("lora", {}),
+            "fill_post": fill_post_output.get("lora", {}),
+        }
+        output["inference_settings"] = {
+            "method": FLUX_FILL_CANNY_FILL_METHOD,
+            "prompt": settings.prompt,
+            "seed": settings.seed,
+            "output_format": settings.output_format,
+            "fill_pre": {
+                "prompt": settings.fill_pre_prompt,
+                "negative_prompt": settings.fill_pre_negative_prompt,
+                "partial_noise": settings.fill_pre_partial_noise,
+                "guidance_scale": settings.fill_pre_guidance_scale,
+                "num_inference_steps": settings.fill_pre_num_inference_steps,
+                "max_sequence_length": settings.fill_max_sequence_length,
+                "lora_scale": settings.fill_pre_lora_scale,
+            },
+            "fill_post": {
+                "prompt": settings.fill_post_prompt,
+                "negative_prompt": settings.fill_post_negative_prompt,
+                "partial_noise": settings.fill_post_partial_noise,
+                "guidance_scale": settings.fill_post_guidance_scale,
+                "num_inference_steps": settings.fill_post_num_inference_steps,
+                "max_sequence_length": settings.fill_max_sequence_length,
+                "lora_scale": settings.fill_post_lora_scale,
+            },
+            "canny": {
+                "prompt": settings.canny_prompt,
+                "partial_noise": settings.canny_partial_noise,
+                "guidance_scale": settings.canny_guidance_scale,
+                "num_inference_steps": settings.canny_num_inference_steps,
+                "max_sequence_length": settings.canny_max_sequence_length,
+                "lora_scale": settings.canny_lora_scale,
+                "low_threshold": settings.canny_low_threshold,
+                "high_threshold": settings.canny_high_threshold,
+                "blur_radius": settings.canny_blur_radius,
+                "backend_revision": canny_output.get("inference_settings", {}).get("backend_revision"),
+                "latent_source_strategy": canny_output.get("inference_settings", {}).get("latent_source_strategy"),
+            },
+            "lanpaint": {
+                "inner_steps": settings.lanpaint_inner_steps,
+                "friction": settings.lanpaint_friction,
+                "lambda": settings.lanpaint_lambda,
+                "beta": settings.lanpaint_beta,
+                "step_size": settings.lanpaint_step_size,
+                "final_outer_steps_without_inner": settings.lanpaint_final_outer_steps_without_inner,
+            },
+        }
+        output["outside_mask_changed_after_hard_composite"] = fill_post_output.get(
+            "outside_mask_changed_after_hard_composite"
+        )
+        output.pop("run_report", None)
+        return output
+
+
+def _fill_canny_native_payload(
+    payload: dict[str, Any],
+    settings: CannyFillRequestSettings,
+    filled_image_base64: str,
+    original_image_base64: str,
+) -> dict[str, Any]:
+    canny_payload = dict(payload)
+    canny_payload.update(
+        {
+            "method": FLUX_CANNY_LANPAINT_NATIVE_METHOD,
+            "image_base64": filled_image_base64,
+            "control_image_base64": payload.get("control_image_base64") or original_image_base64,
+            "prompt": settings.canny_prompt,
+            "partial_noise": settings.canny_partial_noise,
+            "guidance_scale": settings.canny_guidance_scale,
+            "num_inference_steps": settings.canny_num_inference_steps,
+            "max_sequence_length": settings.canny_max_sequence_length,
+            "lora_scale": settings.canny_lora_scale,
+            "output_format": settings.output_format,
+            "canny_low_threshold": settings.canny_low_threshold,
+            "canny_high_threshold": settings.canny_high_threshold,
+            "canny_blur_radius": settings.canny_blur_radius,
+            "lanpaint_inner_steps": settings.lanpaint_inner_steps,
+            "lanpaint_friction": settings.lanpaint_friction,
+            "lanpaint_lambda": settings.lanpaint_lambda,
+            "lanpaint_beta": settings.lanpaint_beta,
+            "lanpaint_step_size": settings.lanpaint_step_size,
+            "lanpaint_final_outer_steps_without_inner": (
+                settings.lanpaint_final_outer_steps_without_inner
+            ),
+            "canny_control_strategy": settings.canny_control_strategy,
+        }
+    )
+    if settings.canny_control_strategy is None:
+        canny_payload.pop("canny_control_strategy", None)
+    for key in (
+        "fill_prompt", "fill_negative_prompt", "fill_partial_noise",
+        "fill_guidance_scale", "fill_num_inference_steps",
+        "fill_max_sequence_length", "fill_lora_scale",
+        "fill_pre_prompt", "fill_pre_negative_prompt", "fill_pre_partial_noise",
+        "fill_pre_guidance_scale", "fill_pre_num_inference_steps", "fill_pre_lora_scale",
+        "fill_post_prompt", "fill_post_negative_prompt", "fill_post_partial_noise",
+        "fill_post_guidance_scale", "fill_post_num_inference_steps", "fill_post_lora_scale",
+    ):
+        canny_payload.pop(key, None)
+    return canny_payload
+
+
 __all__ = [
     "CANNY_FILL_DEFAULT_CANNY_GUIDANCE_SCALE",
     "CANNY_FILL_DEFAULT_CANNY_PARTIAL_NOISE",
@@ -595,5 +1095,7 @@ __all__ = [
     "CANNY_FILL_DEFAULT_FILL_STEPS",
     "CannyFillRequestSettings",
     "FluxCannyFillService",
+    "FluxFillCannyFillService",
+    "FluxFillCannyNativeService",
     "parse_canny_fill_settings",
 ]

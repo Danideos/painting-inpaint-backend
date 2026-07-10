@@ -15,7 +15,10 @@ QWEN_EDIT_VOLUME_NAME = "qwen-edit-models"
 SD35_VOLUME_NAME = "sd35-inpaint-models"
 SDXL_BRUSHNET_VOLUME_NAME = "sdxl-brushnet-models"
 HF_SECRET_NAME = "huggingface-secret"
-API_SECRET_NAME = "painting-inpaint-restoration-api"
+API_SECRET_NAME = os.environ.get(
+    "MODAL_API_SECRET_NAME",
+    "painting-inpaint-restoration-api",
+)
 API_SECRET_KEY = "RESTORATION_API_KEY"
 HTTP_HEARTBEAT_SECONDS = 15.0
 MAX_HTTP_REQUEST_MB = 45

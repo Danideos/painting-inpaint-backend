@@ -46,7 +46,7 @@ from diffusers.utils import (
     unscale_lora_layers,
 )
 from diffusers.utils.import_utils import is_invisible_watermark_available
-from diffusers.utils.torch_utils import is_compiled_module, is_torch_version, randn_tensor
+from diffusers.utils.torch_utils import apply_freeu, is_compiled_module, is_torch_version, randn_tensor
 
 from .model import BrushNetModel
 
@@ -57,6 +57,222 @@ if is_invisible_watermark_available():
 # from .multibrushnet import MultiBrushNetModel
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def _pop_brushnet_sample(samples: list[torch.Tensor]) -> torch.Tensor | None:
+    if not samples:
+        return None
+    return samples.pop(0)
+
+
+def _add_brushnet_sample(hidden_states: torch.Tensor, samples: list[torch.Tensor]) -> torch.Tensor:
+    sample = _pop_brushnet_sample(samples)
+    if sample is None:
+        return hidden_states
+    return hidden_states + sample
+
+
+def _run_down_block_with_brushnet_samples(
+    downsample_block,
+    *,
+    hidden_states: torch.Tensor,
+    temb: torch.Tensor,
+    down_block_add_samples: list[torch.Tensor],
+    encoder_hidden_states: torch.Tensor | None = None,
+    attention_mask: torch.Tensor | None = None,
+    cross_attention_kwargs: dict[str, Any] | None = None,
+    encoder_attention_mask: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, tuple[torch.Tensor, ...]]:
+    output_states: tuple[torch.Tensor, ...] = ()
+    if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
+        for resnet, attn in zip(downsample_block.resnets, downsample_block.attentions):
+            hidden_states = resnet(hidden_states, temb)
+            hidden_states = attn(
+                hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                cross_attention_kwargs=cross_attention_kwargs,
+                attention_mask=attention_mask,
+                encoder_attention_mask=encoder_attention_mask,
+                return_dict=False,
+            )[0]
+            hidden_states = _add_brushnet_sample(hidden_states, down_block_add_samples)
+            output_states += (hidden_states,)
+    else:
+        for resnet in downsample_block.resnets:
+            hidden_states = resnet(hidden_states, temb)
+            hidden_states = _add_brushnet_sample(hidden_states, down_block_add_samples)
+            output_states += (hidden_states,)
+
+    if downsample_block.downsamplers is not None:
+        for downsampler in downsample_block.downsamplers:
+            hidden_states = downsampler(hidden_states)
+        hidden_states = _add_brushnet_sample(hidden_states, down_block_add_samples)
+        output_states += (hidden_states,)
+
+    return hidden_states, output_states
+
+
+def _run_up_block_with_brushnet_samples(
+    upsample_block,
+    *,
+    hidden_states: torch.Tensor,
+    res_hidden_states_tuple: tuple[torch.Tensor, ...],
+    temb: torch.Tensor,
+    up_block_add_samples: list[torch.Tensor],
+    encoder_hidden_states: torch.Tensor | None = None,
+    cross_attention_kwargs: dict[str, Any] | None = None,
+    upsample_size: tuple[int, int] | None = None,
+    attention_mask: torch.Tensor | None = None,
+    encoder_attention_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    is_freeu_enabled = (
+        getattr(upsample_block, "s1", None)
+        and getattr(upsample_block, "s2", None)
+        and getattr(upsample_block, "b1", None)
+        and getattr(upsample_block, "b2", None)
+    )
+    if hasattr(upsample_block, "has_cross_attention") and upsample_block.has_cross_attention:
+        for resnet, attn in zip(upsample_block.resnets, upsample_block.attentions):
+            res_hidden_states = res_hidden_states_tuple[-1]
+            res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+            if is_freeu_enabled:
+                hidden_states, res_hidden_states = apply_freeu(
+                    upsample_block.resolution_idx,
+                    hidden_states,
+                    res_hidden_states,
+                    s1=upsample_block.s1,
+                    s2=upsample_block.s2,
+                    b1=upsample_block.b1,
+                    b2=upsample_block.b2,
+                )
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = resnet(hidden_states, temb)
+            hidden_states = attn(
+                hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                cross_attention_kwargs=cross_attention_kwargs,
+                attention_mask=attention_mask,
+                encoder_attention_mask=encoder_attention_mask,
+                return_dict=False,
+            )[0]
+            hidden_states = _add_brushnet_sample(hidden_states, up_block_add_samples)
+    else:
+        for resnet in upsample_block.resnets:
+            res_hidden_states = res_hidden_states_tuple[-1]
+            res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+            if is_freeu_enabled:
+                hidden_states, res_hidden_states = apply_freeu(
+                    upsample_block.resolution_idx,
+                    hidden_states,
+                    res_hidden_states,
+                    s1=upsample_block.s1,
+                    s2=upsample_block.s2,
+                    b1=upsample_block.b1,
+                    b2=upsample_block.b2,
+                )
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = resnet(hidden_states, temb)
+            hidden_states = _add_brushnet_sample(hidden_states, up_block_add_samples)
+
+    if upsample_block.upsamplers is not None:
+        for upsampler in upsample_block.upsamplers:
+            hidden_states = upsampler(hidden_states, upsample_size)
+        hidden_states = _add_brushnet_sample(hidden_states, up_block_add_samples)
+
+    return hidden_states
+
+
+def _unet_forward_with_brushnet_samples(
+    unet: UNet2DConditionModel,
+    sample: torch.Tensor,
+    timestep: torch.Tensor | float | int,
+    *,
+    encoder_hidden_states: torch.Tensor,
+    timestep_cond: torch.Tensor | None = None,
+    cross_attention_kwargs: dict[str, Any] | None = None,
+    added_cond_kwargs: dict[str, torch.Tensor] | None = None,
+    down_block_add_samples: tuple[torch.Tensor, ...] | list[torch.Tensor],
+    mid_block_add_sample: torch.Tensor,
+    up_block_add_samples: tuple[torch.Tensor, ...] | list[torch.Tensor],
+    return_dict: bool = False,
+) -> tuple[torch.Tensor, ...]:
+    default_overall_up_factor = 2**unet.num_upsamplers
+    forward_upsample_size = any(dim % default_overall_up_factor != 0 for dim in sample.shape[-2:])
+    upsample_size = None
+
+    if unet.config.center_input_sample:
+        sample = 2 * sample - 1.0
+
+    t_emb = unet.get_time_embed(sample=sample, timestep=timestep)
+    emb = unet.time_embedding(t_emb, timestep_cond)
+    aug_emb = unet.get_aug_embed(
+        emb=emb,
+        encoder_hidden_states=encoder_hidden_states,
+        added_cond_kwargs=added_cond_kwargs,
+    )
+    emb = emb + aug_emb if aug_emb is not None else emb
+    if unet.time_embed_act is not None:
+        emb = unet.time_embed_act(emb)
+    encoder_hidden_states = unet.process_encoder_hidden_states(
+        encoder_hidden_states=encoder_hidden_states,
+        added_cond_kwargs=added_cond_kwargs,
+    )
+
+    sample = unet.conv_in(sample)
+    down_samples = list(down_block_add_samples)
+    up_samples = list(up_block_add_samples)
+    sample = _add_brushnet_sample(sample, down_samples)
+
+    down_block_res_samples = (sample,)
+    for downsample_block in unet.down_blocks:
+        sample, res_samples = _run_down_block_with_brushnet_samples(
+            downsample_block,
+            hidden_states=sample,
+            temb=emb,
+            encoder_hidden_states=encoder_hidden_states,
+            cross_attention_kwargs=cross_attention_kwargs,
+            down_block_add_samples=down_samples,
+        )
+        down_block_res_samples += res_samples
+
+    if unet.mid_block is not None:
+        if hasattr(unet.mid_block, "has_cross_attention") and unet.mid_block.has_cross_attention:
+            sample = unet.mid_block(
+                sample,
+                emb,
+                encoder_hidden_states=encoder_hidden_states,
+                cross_attention_kwargs=cross_attention_kwargs,
+            )
+        else:
+            sample = unet.mid_block(sample, emb)
+    sample = sample + mid_block_add_sample
+
+    for i, upsample_block in enumerate(unet.up_blocks):
+        is_final_block = i == len(unet.up_blocks) - 1
+        res_samples = down_block_res_samples[-len(upsample_block.resnets) :]
+        down_block_res_samples = down_block_res_samples[: -len(upsample_block.resnets)]
+        if not is_final_block and forward_upsample_size:
+            upsample_size = down_block_res_samples[-1].shape[2:]
+
+        sample = _run_up_block_with_brushnet_samples(
+            upsample_block,
+            hidden_states=sample,
+            temb=emb,
+            res_hidden_states_tuple=res_samples,
+            encoder_hidden_states=encoder_hidden_states,
+            cross_attention_kwargs=cross_attention_kwargs,
+            upsample_size=upsample_size,
+            up_block_add_samples=up_samples,
+        )
+
+    if unet.conv_norm_out:
+        sample = unet.conv_norm_out(sample)
+        sample = unet.conv_act(sample)
+    sample = unet.conv_out(sample)
+
+    if return_dict:
+        return (sample,)
+    return (sample,)
 
 
 EXAMPLE_DOC_STRING = """
@@ -1455,16 +1671,17 @@ class StableDiffusionXLBrushNetPipeline(
                     added_cond_kwargs["image_embeds"] = image_embeds
 
                 # predict the noise residual
-                noise_pred = self.unet(
+                noise_pred = _unet_forward_with_brushnet_samples(
+                    self.unet,
                     latent_model_input,
                     t,
                     encoder_hidden_states=prompt_embeds,
                     timestep_cond=timestep_cond,
                     cross_attention_kwargs=self.cross_attention_kwargs,
+                    added_cond_kwargs=added_cond_kwargs,
                     down_block_add_samples=down_block_res_samples,
                     mid_block_add_sample=mid_block_res_sample,
                     up_block_add_samples=up_block_res_samples,
-                    added_cond_kwargs=added_cond_kwargs,
                     return_dict=False,
                 )[0]
 

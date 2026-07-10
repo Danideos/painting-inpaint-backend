@@ -36,9 +36,79 @@ from diffusers.models.unets.unet_2d_blocks import (
 
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from diffusers.utils import BaseOutput, logging
+from diffusers.utils.torch_utils import apply_freeu
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+
+def _run_up_block_collecting_samples(
+    upsample_block,
+    *,
+    hidden_states: torch.Tensor,
+    res_hidden_states_tuple: Tuple[torch.Tensor, ...],
+    temb: torch.Tensor,
+    encoder_hidden_states: torch.Tensor | None = None,
+    cross_attention_kwargs: Dict[str, Any] | None = None,
+    upsample_size: Tuple[int, int] | None = None,
+    attention_mask: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, Tuple[torch.Tensor, ...]]:
+    is_freeu_enabled = (
+        getattr(upsample_block, "s1", None)
+        and getattr(upsample_block, "s2", None)
+        and getattr(upsample_block, "b1", None)
+        and getattr(upsample_block, "b2", None)
+    )
+    output_states: Tuple[torch.Tensor, ...] = ()
+
+    if hasattr(upsample_block, "has_cross_attention") and upsample_block.has_cross_attention:
+        for resnet, attn in zip(upsample_block.resnets, upsample_block.attentions):
+            res_hidden_states = res_hidden_states_tuple[-1]
+            res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+            if is_freeu_enabled:
+                hidden_states, res_hidden_states = apply_freeu(
+                    upsample_block.resolution_idx,
+                    hidden_states,
+                    res_hidden_states,
+                    s1=upsample_block.s1,
+                    s2=upsample_block.s2,
+                    b1=upsample_block.b1,
+                    b2=upsample_block.b2,
+                )
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = resnet(hidden_states, temb)
+            hidden_states = attn(
+                hidden_states,
+                encoder_hidden_states=encoder_hidden_states,
+                cross_attention_kwargs=cross_attention_kwargs,
+                attention_mask=attention_mask,
+                return_dict=False,
+            )[0]
+            output_states += (hidden_states,)
+    else:
+        for resnet in upsample_block.resnets:
+            res_hidden_states = res_hidden_states_tuple[-1]
+            res_hidden_states_tuple = res_hidden_states_tuple[:-1]
+            if is_freeu_enabled:
+                hidden_states, res_hidden_states = apply_freeu(
+                    upsample_block.resolution_idx,
+                    hidden_states,
+                    res_hidden_states,
+                    s1=upsample_block.s1,
+                    s2=upsample_block.s2,
+                    b1=upsample_block.b1,
+                    b2=upsample_block.b2,
+                )
+            hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
+            hidden_states = resnet(hidden_states, temb)
+            output_states += (hidden_states,)
+
+    if upsample_block.upsamplers is not None:
+        for upsampler in upsample_block.upsamplers:
+            hidden_states = upsampler(hidden_states, upsample_size)
+        output_states += (hidden_states,)
+
+    return hidden_states, output_states
 
 
 @dataclass
@@ -877,6 +947,7 @@ class BrushNetModel(ModelMixin, ConfigMixin):
 
         # 7. up
         up_block_res_samples = ()
+        upsample_size = None
         for i, upsample_block in enumerate(self.up_blocks):
             is_final_block = i == len(self.up_blocks) - 1
 
@@ -888,25 +959,16 @@ class BrushNetModel(ModelMixin, ConfigMixin):
             if not is_final_block:
                 upsample_size = down_block_res_samples[-1].shape[2:]
 
-            if hasattr(upsample_block, "has_cross_attention") and upsample_block.has_cross_attention:
-                sample, up_res_samples = upsample_block(
-                    hidden_states=sample,
-                    temb=emb,
-                    res_hidden_states_tuple=res_samples,
-                    encoder_hidden_states=encoder_hidden_states,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    upsample_size=upsample_size,
-                    attention_mask=attention_mask,
-                    return_res_samples=True
-                )
-            else:
-                sample, up_res_samples = upsample_block(
-                    hidden_states=sample,
-                    temb=emb,
-                    res_hidden_states_tuple=res_samples,
-                    upsample_size=upsample_size,
-                    return_res_samples=True
-                )
+            sample, up_res_samples = _run_up_block_collecting_samples(
+                upsample_block,
+                hidden_states=sample,
+                temb=emb,
+                res_hidden_states_tuple=res_samples,
+                encoder_hidden_states=encoder_hidden_states,
+                cross_attention_kwargs=cross_attention_kwargs,
+                upsample_size=upsample_size,
+                attention_mask=attention_mask,
+            )
 
             if not isinstance(up_res_samples, tuple):
                 up_res_samples = (up_res_samples,)

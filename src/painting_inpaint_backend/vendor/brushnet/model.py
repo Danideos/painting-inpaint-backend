@@ -847,6 +847,8 @@ class BrushNetModel(ModelMixin, ConfigMixin):
             else:
                 sample, res_samples = downsample_block(hidden_states=sample, temb=emb)
 
+            if not isinstance(res_samples, tuple):
+                res_samples = (res_samples,)
             down_block_res_samples += res_samples
 
         # 4. PaintingNet down blocks
@@ -906,6 +908,8 @@ class BrushNetModel(ModelMixin, ConfigMixin):
                     return_res_samples=True
                 )
 
+            if not isinstance(up_res_samples, tuple):
+                up_res_samples = (up_res_samples,)
             up_block_res_samples += up_res_samples
 
         # 8. BrushNet up blocks

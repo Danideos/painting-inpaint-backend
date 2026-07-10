@@ -243,7 +243,7 @@ class SDXLBrushNetInferenceService:
         pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
 
         device_started = time.perf_counter()
-        if env_flag("ENABLE_MODEL_CPU_OFFLOAD", default=True) and hasattr(
+        if env_flag("ENABLE_MODEL_CPU_OFFLOAD", default=False) and hasattr(
             pipe,
             "enable_model_cpu_offload",
         ):

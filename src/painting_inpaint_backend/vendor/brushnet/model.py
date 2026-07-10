@@ -378,7 +378,21 @@ class BrushNetModel(ModelMixin, ConfigMixin):
         brushnet_block = zero_module(brushnet_block)
         self.brushnet_mid_block = brushnet_block
 
-        self.mid_block = get_mid_block(
+        if mid_block_type == "MidBlock2D":
+            self.mid_block = UNetMidBlock2D(
+                in_channels=mid_block_channel,
+                temb_channels=time_embed_dim,
+                dropout=0.0,
+                num_layers=1,
+                resnet_eps=norm_eps,
+                resnet_act_fn=act_fn,
+                output_scale_factor=mid_block_scale_factor,
+                resnet_time_scale_shift=resnet_time_scale_shift,
+                resnet_groups=norm_num_groups,
+                add_attention=False,
+            )
+        else:
+            self.mid_block = get_mid_block(
                 mid_block_type,
                 transformer_layers_per_block=transformer_layers_per_block[-1],
                 in_channels=mid_block_channel,
@@ -392,7 +406,7 @@ class BrushNetModel(ModelMixin, ConfigMixin):
                 resnet_groups=norm_num_groups,
                 use_linear_projection=use_linear_projection,
                 upcast_attention=upcast_attention,
-        )
+            )
 
         # count how many layers upsample the images
         self.num_upsamplers = 0

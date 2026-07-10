@@ -195,16 +195,20 @@ def resolve_hf_snapshot_path(
     return None
 
 
-def resolve_model_load_target(model_id: str = DEFAULT_MODEL_ID) -> ModelPathResolution:
+def resolve_model_load_target(
+    model_id: str = DEFAULT_MODEL_ID,
+    *,
+    env_name: str = "MODEL_PATH",
+) -> ModelPathResolution:
     """Resolve an explicit local model, cache snapshot, or opt-in download."""
 
     model_id = normalize_model_id(model_id)
-    explicit_model_path = _env_value("MODEL_PATH")
+    explicit_model_path = _env_value(env_name)
     if explicit_model_path is not None:
         model_path = Path(explicit_model_path).expanduser()
         if not model_path.exists() or not model_path.is_dir():
             raise FileNotFoundError(
-                "MODEL_PATH must point to an existing local model directory. "
+                f"{env_name} must point to an existing local model directory. "
                 f"Configured path: {model_path}"
             )
         return ModelPathResolution(

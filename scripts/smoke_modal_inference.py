@@ -14,6 +14,11 @@ import modal
 from painting_inpaint_backend.core.methods import (
     FLUX_CANNY_FILL_METHOD,
     FLUX_CANNY_LANPAINT_METHOD,
+    QWEN_EDIT_METHOD,
+    SD15_INPAINT_METHOD,
+    SD35_INPAINT_METHOD,
+    SDXL_BRUSHNET_METHOD,
+    SDXL_INPAINT_METHOD,
     normalize_method,
 )
 from painting_inpaint_backend.core.progress import sanitize_for_progress
@@ -21,6 +26,11 @@ from painting_inpaint_backend.modal.app import (
     FluxCannyFillModalBackend,
     FluxCannyLanPaintModalBackend,
     FluxFillModalBackend,
+    QwenEditModalBackend,
+    SD15ModalBackend,
+    SD35ModalBackend,
+    SDXLBrushNetModalBackend,
+    SDXLModalBackend,
     app,
 )
 
@@ -44,6 +54,16 @@ def main() -> int:
         backend = FluxCannyFillModalBackend()
     elif method == FLUX_CANNY_LANPAINT_METHOD:
         backend = FluxCannyLanPaintModalBackend()
+    elif method == SD15_INPAINT_METHOD:
+        backend = SD15ModalBackend()
+    elif method == SDXL_INPAINT_METHOD:
+        backend = SDXLModalBackend()
+    elif method == QWEN_EDIT_METHOD:
+        backend = QwenEditModalBackend()
+    elif method == SD35_INPAINT_METHOD:
+        backend = SD35ModalBackend()
+    elif method == SDXL_BRUSHNET_METHOD:
+        backend = SDXLBrushNetModalBackend()
     else:
         backend = FluxFillModalBackend()
 

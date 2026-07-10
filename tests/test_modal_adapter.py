@@ -12,6 +12,16 @@ from painting_inpaint_backend.modal.config import (
     HYBRID_FILL_MODELS_DIR,
     HYBRID_INFERENCE_ENV,
     INFERENCE_ENV,
+    QWEN_EDIT_INFERENCE_ENV,
+    QWEN_EDIT_MODELS_DIR,
+    SD15_INFERENCE_ENV,
+    SD15_MODELS_DIR,
+    SD35_INFERENCE_ENV,
+    SD35_MODELS_DIR,
+    SDXL_BRUSHNET_INFERENCE_ENV,
+    SDXL_BRUSHNET_MODELS_DIR,
+    SDXL_INFERENCE_ENV,
+    SDXL_MODELS_DIR,
     backend_image_ref,
     canny_backend_image_ref,
 )
@@ -82,6 +92,27 @@ def test_modal_paths_are_posix_even_on_windows():
     assert "\\" not in HYBRID_INFERENCE_ENV["FILL_MODEL_PATH"]
     assert str(HYBRID_CANNY_MODELS_DIR) == "/models/canny"
     assert str(HYBRID_FILL_MODELS_DIR) == "/models/fill"
+    assert SD15_INFERENCE_ENV["MODEL_PATH"].startswith("/sd15_models/")
+    assert SDXL_INFERENCE_ENV["MODEL_PATH"].startswith("/sdxl_models/")
+    assert QWEN_EDIT_INFERENCE_ENV["MODEL_PATH"].startswith("/qwen_edit_models/")
+    assert SD35_INFERENCE_ENV["MODEL_PATH"].startswith("/sd35_models/")
+    assert SD35_INFERENCE_ENV["CONTROLNET_PATH"].startswith("/sd35_models/")
+    assert SDXL_BRUSHNET_INFERENCE_ENV["MODEL_PATH"].startswith("/sdxl_brushnet_models/")
+    assert SDXL_BRUSHNET_INFERENCE_ENV["BRUSHNET_PATH"].startswith("/sdxl_brushnet_models/")
+    assert SDXL_BRUSHNET_INFERENCE_ENV["VAE_PATH"].startswith("/sdxl_brushnet_models/")
+    assert "\\" not in SD15_INFERENCE_ENV["MODEL_PATH"]
+    assert "\\" not in SDXL_INFERENCE_ENV["MODEL_PATH"]
+    assert "\\" not in QWEN_EDIT_INFERENCE_ENV["MODEL_PATH"]
+    assert "\\" not in SD35_INFERENCE_ENV["MODEL_PATH"]
+    assert "\\" not in SD35_INFERENCE_ENV["CONTROLNET_PATH"]
+    assert "\\" not in SDXL_BRUSHNET_INFERENCE_ENV["MODEL_PATH"]
+    assert "\\" not in SDXL_BRUSHNET_INFERENCE_ENV["BRUSHNET_PATH"]
+    assert "\\" not in SDXL_BRUSHNET_INFERENCE_ENV["VAE_PATH"]
+    assert str(SD15_MODELS_DIR) == "/sd15_models"
+    assert str(SDXL_MODELS_DIR) == "/sdxl_models"
+    assert str(QWEN_EDIT_MODELS_DIR) == "/qwen_edit_models"
+    assert str(SD35_MODELS_DIR) == "/sd35_models"
+    assert str(SDXL_BRUSHNET_MODELS_DIR) == "/sdxl_brushnet_models"
 
 
 def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_workers():
@@ -101,6 +132,11 @@ def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_worker
     assert "FluxCannyFillModalBackend" in source
     assert "FluxCannyFillService" in source
     assert "FluxCannyLanPaintNativeModalBackend" in source
+    assert "SD15ModalBackend" in source
+    assert "SDXLModalBackend" in source
+    assert "QwenEditModalBackend" in source
+    assert "SD35ModalBackend" in source
+    assert "SDXLBrushNetModalBackend" in source
     assert "painting-inpaint-ghcr" not in source
 
 

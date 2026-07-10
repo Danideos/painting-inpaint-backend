@@ -89,6 +89,7 @@ class CannyFillRequestSettings:
     canny_high_threshold: int
     canny_blur_radius: float
     canny_control_strategy: str | None
+    skip_fill_pre: bool
     lanpaint_inner_steps: int
     lanpaint_friction: float
     lanpaint_lambda: float
@@ -200,7 +201,11 @@ def parse_canny_fill_settings(
         parsed_method = normalize_method(method or payload.get("method"))
     except ValueError as exc:
         raise WorkerInputError(str(exc)) from exc
-    if parsed_method not in {FLUX_CANNY_FILL_METHOD, FLUX_FILL_CANNY_NATIVE_METHOD, FLUX_FILL_CANNY_FILL_METHOD}:
+    if parsed_method not in {
+        FLUX_CANNY_FILL_METHOD,
+        FLUX_FILL_CANNY_NATIVE_METHOD,
+        FLUX_FILL_CANNY_FILL_METHOD,
+    }:
         raise WorkerInputError(
             "The hybrid service requires method='flux_canny_fill', "
             "'flux_fill_canny_native', or 'flux_fill_canny_fill'."
@@ -225,8 +230,13 @@ def parse_canny_fill_settings(
         raise WorkerInputError("canny_blur_radius must be non-negative.")
 
     canny_control_strategy = payload.get("canny_control_strategy", None)
-    if canny_control_strategy is not None and canny_control_strategy not in {"masked_ink"}:
-        raise WorkerInputError("canny_control_strategy must be 'masked_ink' or omitted.")
+    if canny_control_strategy is not None and canny_control_strategy not in {
+        "masked_ink",
+        "plain_canny",
+    }:
+        raise WorkerInputError(
+            "canny_control_strategy must be 'masked_ink', 'plain_canny', or omitted."
+        )
 
     lanpaint_inner_steps = _payload_int(payload, "lanpaint_inner_steps", LANPAINT_INNER_STEPS)
     if lanpaint_inner_steps < 0:
@@ -352,6 +362,7 @@ def parse_canny_fill_settings(
         canny_high_threshold=canny_high,
         canny_blur_radius=canny_blur,
         canny_control_strategy=canny_control_strategy,
+        skip_fill_pre=bool(payload.get("skip_fill_pre", False)),
         lanpaint_inner_steps=lanpaint_inner_steps,
         lanpaint_friction=lanpaint_friction,
         lanpaint_lambda=lanpaint_lambda,
@@ -683,7 +694,7 @@ class FluxCannyFillService:
 
 
 class FluxFillCannyNativeService:
-    """Run FLUX Fill to pre-fill the mask, then FLUX-Canny/LanPaint native using the filled image as source."""
+    """Run FLUX Fill, then native FLUX-Canny/LanPaint using the filled source."""
 
     def __init__(
         self,
@@ -753,7 +764,12 @@ class FluxFillCannyNativeService:
             )
             with _temporary_environ(self.canny_env):
                 canny_output = self.canny_service.run(
-                    _fill_canny_native_payload(payload, settings, fill_intermediate_base64, original_image_base64),
+                    _fill_canny_native_payload(
+                        payload,
+                        settings,
+                        fill_intermediate_base64,
+                        original_image_base64,
+                    ),
                     reporter=reporter,
                 )
             reporter.emit(
@@ -815,8 +831,12 @@ class FluxFillCannyNativeService:
                 "low_threshold": settings.canny_low_threshold,
                 "high_threshold": settings.canny_high_threshold,
                 "blur_radius": settings.canny_blur_radius,
-                "backend_revision": canny_output.get("inference_settings", {}).get("backend_revision"),
-                "latent_source_strategy": canny_output.get("inference_settings", {}).get("latent_source_strategy"),
+                "backend_revision": canny_output.get("inference_settings", {}).get(
+                    "backend_revision"
+                ),
+                "latent_source_strategy": canny_output.get("inference_settings", {}).get(
+                    "latent_source_strategy"
+                ),
             },
             "lanpaint": {
                 "inner_steps": settings.lanpaint_inner_steps,
@@ -824,7 +844,9 @@ class FluxFillCannyNativeService:
                 "lambda": settings.lanpaint_lambda,
                 "beta": settings.lanpaint_beta,
                 "step_size": settings.lanpaint_step_size,
-                "final_outer_steps_without_inner": settings.lanpaint_final_outer_steps_without_inner,
+                "final_outer_steps_without_inner": (
+                    settings.lanpaint_final_outer_steps_without_inner
+                ),
             },
         }
         output["outside_mask_changed_after_hard_composite"] = canny_output.get(
@@ -868,38 +890,49 @@ class FluxFillCannyFillService:
 
         with self._lock:
             # Stage 1: Fill to replace white/missing content with plausible pixels.
-            reporter.emit(
-                "hybrid_fill_pre_start",
-                stage="inference",
-                message="Starting FLUX Fill pre-fill stage.",
-                metadata={"method": FLUX_FILL_CANNY_FILL_METHOD, "stage": 1},
-            )
-            with _temporary_environ(self.fill_env):
-                fill_pre_output = self.fill_service.run(
-                    _fill_payload(
-                        payload,
-                        settings,
-                        original_image_base64,
-                        prompt=settings.fill_pre_prompt,
-                        negative_prompt=settings.fill_pre_negative_prompt,
-                        partial_noise=settings.fill_pre_partial_noise,
-                        guidance_scale=settings.fill_pre_guidance_scale,
-                        num_inference_steps=settings.fill_pre_num_inference_steps,
-                        lora_scale=settings.fill_pre_lora_scale,
-                    ),
-                    reporter=reporter,
+            # Skipped when skip_fill_pre=True — the original image is used directly.
+            if settings.skip_fill_pre:
+                reporter.emit(
+                    "hybrid_fill_pre_start",
+                    stage="inference",
+                    message="Skipping FLUX Fill pre-fill stage (skip_fill_pre=True).",
+                    metadata={"method": FLUX_FILL_CANNY_FILL_METHOD, "stage": 1},
                 )
-            reporter.emit(
-                "hybrid_fill_pre_done",
-                stage="inference",
-                message="FLUX Fill pre-fill stage completed.",
-                metadata={
-                    "width": fill_pre_output.get("width"),
-                    "height": fill_pre_output.get("height"),
-                },
-            )
-
-            fill_pre_base64 = str(fill_pre_output["image_base64"])
+                fill_pre_base64 = original_image_base64
+                fill_pre_base64_for_response: str | None = None
+            else:
+                reporter.emit(
+                    "hybrid_fill_pre_start",
+                    stage="inference",
+                    message="Starting FLUX Fill pre-fill stage.",
+                    metadata={"method": FLUX_FILL_CANNY_FILL_METHOD, "stage": 1},
+                )
+                with _temporary_environ(self.fill_env):
+                    fill_pre_output = self.fill_service.run(
+                        _fill_payload(
+                            payload,
+                            settings,
+                            original_image_base64,
+                            prompt=settings.fill_pre_prompt,
+                            negative_prompt=settings.fill_pre_negative_prompt,
+                            partial_noise=settings.fill_pre_partial_noise,
+                            guidance_scale=settings.fill_pre_guidance_scale,
+                            num_inference_steps=settings.fill_pre_num_inference_steps,
+                            lora_scale=settings.fill_pre_lora_scale,
+                        ),
+                        reporter=reporter,
+                    )
+                reporter.emit(
+                    "hybrid_fill_pre_done",
+                    stage="inference",
+                    message="FLUX Fill pre-fill stage completed.",
+                    metadata={
+                        "width": fill_pre_output.get("width"),
+                        "height": fill_pre_output.get("height"),
+                    },
+                )
+                fill_pre_base64 = str(fill_pre_output["image_base64"])
+                fill_pre_base64_for_response = fill_pre_base64
 
             # Stage 2: Canny/LanPaint native using the pre-filled image as source latent.
             reporter.emit(
@@ -910,7 +943,12 @@ class FluxFillCannyFillService:
             )
             with _temporary_environ(self.canny_env):
                 canny_output = self.canny_service.run(
-                    _fill_canny_native_payload(payload, settings, fill_pre_base64, original_image_base64),
+                    _fill_canny_native_payload(
+                        payload,
+                        settings,
+                        fill_pre_base64,
+                        original_image_base64,
+                    ),
                     reporter=reporter,
                 )
             reporter.emit(
@@ -962,27 +1000,31 @@ class FluxFillCannyFillService:
 
         elapsed = time.perf_counter() - started
         output = dict(fill_post_output)
-        output["fill_pre_image_base64"] = fill_pre_base64
+        if fill_pre_base64_for_response is not None:
+            output["fill_pre_image_base64"] = fill_pre_base64_for_response
         output["canny_image_base64"] = canny_intermediate_base64
+        _fill_pre_timings = fill_pre_output.get("timings", {}) if not settings.skip_fill_pre else {}
+        _fill_pre_gpu = fill_pre_output.get("gpu_memory", {}) if not settings.skip_fill_pre else {}
+        _fill_pre_model = fill_pre_output.get("model", {}) if not settings.skip_fill_pre else {}
         output["timings"] = {
             "hybrid_total_seconds": elapsed,
-            "fill_pre": fill_pre_output.get("timings", {}),
+            "fill_pre": _fill_pre_timings,
             "canny": canny_output.get("timings", {}),
             "fill_post": fill_post_output.get("timings", {}),
         }
         output["gpu_memory"] = {
-            "fill_pre": fill_pre_output.get("gpu_memory", {}),
+            "fill_pre": _fill_pre_gpu,
             "canny": canny_output.get("gpu_memory", {}),
             "fill_post": fill_post_output.get("gpu_memory", {}),
         }
         output["model"] = {
             "method": FLUX_FILL_CANNY_FILL_METHOD,
-            "fill_pre": fill_pre_output.get("model", {}),
+            "fill_pre": _fill_pre_model,
             "canny": canny_output.get("model", {}),
             "fill_post": fill_post_output.get("model", {}),
         }
         output["lora"] = {
-            "fill_pre": fill_pre_output.get("lora", {}),
+            "fill_pre": fill_pre_output.get("lora", {}) if not settings.skip_fill_pre else {},
             "canny": canny_output.get("lora", {}),
             "fill_post": fill_post_output.get("lora", {}),
         }
@@ -1019,8 +1061,12 @@ class FluxFillCannyFillService:
                 "low_threshold": settings.canny_low_threshold,
                 "high_threshold": settings.canny_high_threshold,
                 "blur_radius": settings.canny_blur_radius,
-                "backend_revision": canny_output.get("inference_settings", {}).get("backend_revision"),
-                "latent_source_strategy": canny_output.get("inference_settings", {}).get("latent_source_strategy"),
+                "backend_revision": canny_output.get("inference_settings", {}).get(
+                    "backend_revision"
+                ),
+                "latent_source_strategy": canny_output.get("inference_settings", {}).get(
+                    "latent_source_strategy"
+                ),
             },
             "lanpaint": {
                 "inner_steps": settings.lanpaint_inner_steps,
@@ -1028,7 +1074,9 @@ class FluxFillCannyFillService:
                 "lambda": settings.lanpaint_lambda,
                 "beta": settings.lanpaint_beta,
                 "step_size": settings.lanpaint_step_size,
-                "final_outer_steps_without_inner": settings.lanpaint_final_outer_steps_without_inner,
+                "final_outer_steps_without_inner": (
+                    settings.lanpaint_final_outer_steps_without_inner
+                ),
             },
         }
         output["outside_mask_changed_after_hard_composite"] = fill_post_output.get(

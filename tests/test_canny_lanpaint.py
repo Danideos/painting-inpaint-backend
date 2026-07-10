@@ -43,6 +43,11 @@ def test_method_defaults_to_fill_and_accepts_canny():
     assert normalize_method("flux_canny_lanpaint") == "flux_canny_lanpaint"
     assert normalize_method("flux_canny_lanpaint_native") == "flux_canny_lanpaint_native"
     assert normalize_method("flux_canny_fill") == "flux_canny_fill"
+    assert normalize_method("sd15_inpaint") == "sd15_inpaint"
+    assert normalize_method("sdxl_inpaint") == "sdxl_inpaint"
+    assert normalize_method("qwen_edit") == "qwen_edit"
+    assert normalize_method("sd35_inpaint") == "sd35_inpaint"
+    assert normalize_method("sdxl_brushnet") == "sdxl_brushnet"
     with pytest.raises(ValueError, match="method must be one of"):
         normalize_method("unknown")
 

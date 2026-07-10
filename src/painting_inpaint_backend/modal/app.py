@@ -22,6 +22,24 @@ from .config import (
     INFERENCE_ENV,
     MAX_HTTP_REQUEST_MB,
     MODELS_DIR,
+    QWEN_EDIT_INFERENCE_ENV,
+    QWEN_EDIT_MODELS_DIR,
+    QWEN_EDIT_VOLUME_NAME,
+    QWEN_GPU_TYPE,
+    SD15_INFERENCE_ENV,
+    SD15_MODELS_DIR,
+    SD15_VOLUME_NAME,
+    SD35_GPU_TYPE,
+    SD35_INFERENCE_ENV,
+    SD35_MODELS_DIR,
+    SD35_VOLUME_NAME,
+    SDXL_BRUSHNET_GPU_TYPE,
+    SDXL_BRUSHNET_INFERENCE_ENV,
+    SDXL_BRUSHNET_MODELS_DIR,
+    SDXL_BRUSHNET_VOLUME_NAME,
+    SDXL_INFERENCE_ENV,
+    SDXL_MODELS_DIR,
+    SDXL_VOLUME_NAME,
     VOLUME_NAME,
     backend_image_ref,
     canny_backend_image_ref,
@@ -31,6 +49,14 @@ from .http import SSE_MEDIA_TYPE, bearer_token_matches, stream_sse_with_heartbea
 app = modal.App(APP_NAME)
 model_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 canny_model_volume = modal.Volume.from_name(CANNY_VOLUME_NAME, create_if_missing=True)
+sd15_model_volume = modal.Volume.from_name(SD15_VOLUME_NAME, create_if_missing=True)
+sdxl_model_volume = modal.Volume.from_name(SDXL_VOLUME_NAME, create_if_missing=True)
+qwen_edit_model_volume = modal.Volume.from_name(QWEN_EDIT_VOLUME_NAME, create_if_missing=True)
+sd35_model_volume = modal.Volume.from_name(SD35_VOLUME_NAME, create_if_missing=True)
+sdxl_brushnet_model_volume = modal.Volume.from_name(
+    SDXL_BRUSHNET_VOLUME_NAME,
+    create_if_missing=True,
+)
 _INCLUDE_LOCAL_SOURCE = os.environ.get(
     "PAINTING_INPAINT_MODAL_INCLUDE_LOCAL_SOURCE",
     "",
@@ -79,6 +105,51 @@ if _CANNY_IMAGE_CONFIGURED:
 else:
     canny_inference_image = inference_image
     hybrid_inference_image = inference_image
+sd15_inference_image = _with_local_backend_source(
+    modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
+        {
+            **SD15_INFERENCE_ENV,
+            "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
+            "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
+        }
+    )
+)
+sdxl_inference_image = _with_local_backend_source(
+    modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
+        {
+            **SDXL_INFERENCE_ENV,
+            "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
+            "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
+        }
+    )
+)
+qwen_edit_inference_image = _with_local_backend_source(
+    modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
+        {
+            **QWEN_EDIT_INFERENCE_ENV,
+            "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
+            "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
+        }
+    )
+)
+sd35_inference_image = _with_local_backend_source(
+    modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
+        {
+            **SD35_INFERENCE_ENV,
+            "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
+            "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
+        }
+    )
+)
+sdxl_brushnet_inference_image = _with_local_backend_source(
+    modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
+        {
+            **SDXL_BRUSHNET_INFERENCE_ENV,
+            "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
+            "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
+        }
+    )
+)
 web_image = (
     modal.Image.debian_slim(python_version="3.11")
     .uv_pip_install("fastapi>=0.115,<1")
@@ -164,6 +235,408 @@ class FluxFillModalBackend:
             received_message="Modal restoration request received.",
             completion_message="Modal restoration completed.",
             received_metadata={"stream_progress": True},
+        ):
+            if event.get("type") == "final" and isinstance(event.get("output"), dict):
+                timings = event["output"].setdefault("timings", {})
+                timings["modal_container_enter_seconds"] = self.container_enter_seconds
+                timings["modal_request_seconds"] = time.perf_counter() - started
+            yield json_response(event)
+
+
+@app.cls(
+    image=sd15_inference_image,
+    gpu=GPU_TYPE,
+    volumes={str(SD15_MODELS_DIR): sd15_model_volume},
+    timeout=900,
+    scaledown_window=2,
+    include_source=False,
+)
+class SD15ModalBackend:
+    """Scale-to-zero SD1.5 inpainting baseline service."""
+
+    @modal.enter()
+    def enter(self) -> None:
+        from painting_inpaint_backend.core.sd15_service import SD15InferenceService
+
+        started = time.perf_counter()
+        self.service = None
+        self.enter_error = None
+        try:
+            self.service = SD15InferenceService()
+        except Exception as exc:
+            self.enter_error = safe_remote_error(exc, stage="container_initialization")
+        finally:
+            self.container_enter_seconds = time.perf_counter() - started
+
+    @modal.method()
+    def restore(self, payload: dict[str, Any]) -> str:
+        """Run one SD1.5 restoration request."""
+
+        if self.enter_error is not None:
+            return json_response({"modal_error": self.enter_error})
+        try:
+            started = time.perf_counter()
+            assert self.service is not None
+            output = self.service.run(payload)
+            timings = output.setdefault("timings", {})
+            timings["modal_container_enter_seconds"] = self.container_enter_seconds
+            timings["modal_request_seconds"] = time.perf_counter() - started
+            return json_response(output)
+        except Exception as exc:
+            return json_response(
+                {"modal_error": safe_remote_error(exc, stage="request_inference")}
+            )
+
+    @modal.method()
+    def restore_stream(self, payload: dict[str, Any], run_id: str):
+        """Yield SD1.5 progress events across the Modal serialization boundary."""
+
+        from painting_inpaint_backend.core.progress import ProgressReporter
+        from painting_inpaint_backend.core.streaming import stream_inference_events
+
+        if self.enter_error is not None:
+            reporter = ProgressReporter(run_id=run_id, enabled=True)
+            yield json_response(
+                reporter.error(
+                    stage="container_initialization",
+                    message=self.enter_error["error"],
+                    metadata=self.enter_error,
+                )
+            )
+            return
+
+        started = time.perf_counter()
+        assert self.service is not None
+        for event in stream_inference_events(
+            payload,
+            service=self.service,
+            run_id=run_id,
+            provider="modal",
+            received_message="Modal SD1.5 restoration request received.",
+            completion_message="Modal SD1.5 restoration completed.",
+            received_metadata={"stream_progress": True, "method": "sd15_inpaint"},
+        ):
+            if event.get("type") == "final" and isinstance(event.get("output"), dict):
+                timings = event["output"].setdefault("timings", {})
+                timings["modal_container_enter_seconds"] = self.container_enter_seconds
+                timings["modal_request_seconds"] = time.perf_counter() - started
+            yield json_response(event)
+
+
+@app.cls(
+    image=sdxl_inference_image,
+    gpu=GPU_TYPE,
+    volumes={str(SDXL_MODELS_DIR): sdxl_model_volume},
+    timeout=900,
+    scaledown_window=2,
+    include_source=False,
+)
+class SDXLModalBackend:
+    """Scale-to-zero SDXL inpainting baseline service."""
+
+    @modal.enter()
+    def enter(self) -> None:
+        from painting_inpaint_backend.core.sdxl_service import SDXLInferenceService
+
+        started = time.perf_counter()
+        self.service = None
+        self.enter_error = None
+        try:
+            self.service = SDXLInferenceService()
+        except Exception as exc:
+            self.enter_error = safe_remote_error(exc, stage="container_initialization")
+        finally:
+            self.container_enter_seconds = time.perf_counter() - started
+
+    @modal.method()
+    def restore(self, payload: dict[str, Any]) -> str:
+        """Run one SDXL restoration request."""
+
+        if self.enter_error is not None:
+            return json_response({"modal_error": self.enter_error})
+        try:
+            started = time.perf_counter()
+            assert self.service is not None
+            output = self.service.run(payload)
+            timings = output.setdefault("timings", {})
+            timings["modal_container_enter_seconds"] = self.container_enter_seconds
+            timings["modal_request_seconds"] = time.perf_counter() - started
+            return json_response(output)
+        except Exception as exc:
+            return json_response(
+                {"modal_error": safe_remote_error(exc, stage="request_inference")}
+            )
+
+    @modal.method()
+    def restore_stream(self, payload: dict[str, Any], run_id: str):
+        """Yield SDXL progress events across the Modal serialization boundary."""
+
+        from painting_inpaint_backend.core.progress import ProgressReporter
+        from painting_inpaint_backend.core.streaming import stream_inference_events
+
+        if self.enter_error is not None:
+            reporter = ProgressReporter(run_id=run_id, enabled=True)
+            yield json_response(
+                reporter.error(
+                    stage="container_initialization",
+                    message=self.enter_error["error"],
+                    metadata=self.enter_error,
+                )
+            )
+            return
+
+        started = time.perf_counter()
+        assert self.service is not None
+        for event in stream_inference_events(
+            payload,
+            service=self.service,
+            run_id=run_id,
+            provider="modal",
+            received_message="Modal SDXL restoration request received.",
+            completion_message="Modal SDXL restoration completed.",
+            received_metadata={"stream_progress": True, "method": "sdxl_inpaint"},
+        ):
+            if event.get("type") == "final" and isinstance(event.get("output"), dict):
+                timings = event["output"].setdefault("timings", {})
+                timings["modal_container_enter_seconds"] = self.container_enter_seconds
+                timings["modal_request_seconds"] = time.perf_counter() - started
+            yield json_response(event)
+
+
+@app.cls(
+    image=qwen_edit_inference_image,
+    gpu=QWEN_GPU_TYPE,
+    volumes={str(QWEN_EDIT_MODELS_DIR): qwen_edit_model_volume},
+    timeout=2400,
+    scaledown_window=2,
+    include_source=False,
+)
+class QwenEditModalBackend:
+    """Scale-to-zero Qwen-Image-Edit inpainting service."""
+
+    @modal.enter()
+    def enter(self) -> None:
+        from painting_inpaint_backend.core.qwen_edit_service import QwenEditInferenceService
+
+        started = time.perf_counter()
+        self.service = None
+        self.enter_error = None
+        try:
+            self.service = QwenEditInferenceService()
+        except Exception as exc:
+            self.enter_error = safe_remote_error(exc, stage="container_initialization")
+        finally:
+            self.container_enter_seconds = time.perf_counter() - started
+
+    @modal.method()
+    def restore(self, payload: dict[str, Any]) -> str:
+        """Run one Qwen masked editing request."""
+
+        if self.enter_error is not None:
+            return json_response({"modal_error": self.enter_error})
+        try:
+            started = time.perf_counter()
+            assert self.service is not None
+            output = self.service.run(payload)
+            timings = output.setdefault("timings", {})
+            timings["modal_container_enter_seconds"] = self.container_enter_seconds
+            timings["modal_request_seconds"] = time.perf_counter() - started
+            return json_response(output)
+        except Exception as exc:
+            return json_response(
+                {"modal_error": safe_remote_error(exc, stage="request_inference")}
+            )
+
+    @modal.method()
+    def restore_stream(self, payload: dict[str, Any], run_id: str):
+        """Yield Qwen progress events across the Modal serialization boundary."""
+
+        from painting_inpaint_backend.core.progress import ProgressReporter
+        from painting_inpaint_backend.core.streaming import stream_inference_events
+
+        if self.enter_error is not None:
+            reporter = ProgressReporter(run_id=run_id, enabled=True)
+            yield json_response(
+                reporter.error(
+                    stage="container_initialization",
+                    message=self.enter_error["error"],
+                    metadata=self.enter_error,
+                )
+            )
+            return
+
+        started = time.perf_counter()
+        assert self.service is not None
+        for event in stream_inference_events(
+            payload,
+            service=self.service,
+            run_id=run_id,
+            provider="modal",
+            received_message="Modal Qwen-Image-Edit request received.",
+            completion_message="Modal Qwen-Image-Edit restoration completed.",
+            received_metadata={"stream_progress": True, "method": "qwen_edit"},
+        ):
+            if event.get("type") == "final" and isinstance(event.get("output"), dict):
+                timings = event["output"].setdefault("timings", {})
+                timings["modal_container_enter_seconds"] = self.container_enter_seconds
+                timings["modal_request_seconds"] = time.perf_counter() - started
+            yield json_response(event)
+
+
+@app.cls(
+    image=sd35_inference_image,
+    gpu=SD35_GPU_TYPE,
+    volumes={str(SD35_MODELS_DIR): sd35_model_volume},
+    timeout=1800,
+    scaledown_window=2,
+    include_source=False,
+)
+class SD35ModalBackend:
+    """Scale-to-zero SD3 inpainting ControlNet service."""
+
+    @modal.enter()
+    def enter(self) -> None:
+        from painting_inpaint_backend.core.sd35_service import SD35InferenceService
+
+        started = time.perf_counter()
+        self.service = None
+        self.enter_error = None
+        try:
+            self.service = SD35InferenceService()
+        except Exception as exc:
+            self.enter_error = safe_remote_error(exc, stage="container_initialization")
+        finally:
+            self.container_enter_seconds = time.perf_counter() - started
+
+    @modal.method()
+    def restore(self, payload: dict[str, Any]) -> str:
+        """Run one SD3 inpainting ControlNet request."""
+
+        if self.enter_error is not None:
+            return json_response({"modal_error": self.enter_error})
+        try:
+            started = time.perf_counter()
+            assert self.service is not None
+            output = self.service.run(payload)
+            timings = output.setdefault("timings", {})
+            timings["modal_container_enter_seconds"] = self.container_enter_seconds
+            timings["modal_request_seconds"] = time.perf_counter() - started
+            return json_response(output)
+        except Exception as exc:
+            return json_response(
+                {"modal_error": safe_remote_error(exc, stage="request_inference")}
+            )
+
+    @modal.method()
+    def restore_stream(self, payload: dict[str, Any], run_id: str):
+        """Yield SD3 ControlNet progress events across the Modal serialization boundary."""
+
+        from painting_inpaint_backend.core.progress import ProgressReporter
+        from painting_inpaint_backend.core.streaming import stream_inference_events
+
+        if self.enter_error is not None:
+            reporter = ProgressReporter(run_id=run_id, enabled=True)
+            yield json_response(
+                reporter.error(
+                    stage="container_initialization",
+                    message=self.enter_error["error"],
+                    metadata=self.enter_error,
+                )
+            )
+            return
+
+        started = time.perf_counter()
+        assert self.service is not None
+        for event in stream_inference_events(
+            payload,
+            service=self.service,
+            run_id=run_id,
+            provider="modal",
+            received_message="Modal SD3 ControlNet request received.",
+            completion_message="Modal SD3 ControlNet restoration completed.",
+            received_metadata={"stream_progress": True, "method": "sd35_inpaint"},
+        ):
+            if event.get("type") == "final" and isinstance(event.get("output"), dict):
+                timings = event["output"].setdefault("timings", {})
+                timings["modal_container_enter_seconds"] = self.container_enter_seconds
+                timings["modal_request_seconds"] = time.perf_counter() - started
+            yield json_response(event)
+
+
+@app.cls(
+    image=sdxl_brushnet_inference_image,
+    gpu=SDXL_BRUSHNET_GPU_TYPE,
+    volumes={str(SDXL_BRUSHNET_MODELS_DIR): sdxl_brushnet_model_volume},
+    timeout=1800,
+    scaledown_window=2,
+    include_source=False,
+)
+class SDXLBrushNetModalBackend:
+    """Scale-to-zero SDXL BrushNet inpainting adapter service."""
+
+    @modal.enter()
+    def enter(self) -> None:
+        from painting_inpaint_backend.core.sdxl_brushnet_service import (
+            SDXLBrushNetInferenceService,
+        )
+
+        started = time.perf_counter()
+        self.service = None
+        self.enter_error = None
+        try:
+            self.service = SDXLBrushNetInferenceService()
+        except Exception as exc:
+            self.enter_error = safe_remote_error(exc, stage="container_initialization")
+        finally:
+            self.container_enter_seconds = time.perf_counter() - started
+
+    @modal.method()
+    def restore(self, payload: dict[str, Any]) -> str:
+        """Run one SDXL BrushNet restoration request."""
+
+        if self.enter_error is not None:
+            return json_response({"modal_error": self.enter_error})
+        try:
+            started = time.perf_counter()
+            assert self.service is not None
+            output = self.service.run(payload)
+            timings = output.setdefault("timings", {})
+            timings["modal_container_enter_seconds"] = self.container_enter_seconds
+            timings["modal_request_seconds"] = time.perf_counter() - started
+            return json_response(output)
+        except Exception as exc:
+            return json_response(
+                {"modal_error": safe_remote_error(exc, stage="request_inference")}
+            )
+
+    @modal.method()
+    def restore_stream(self, payload: dict[str, Any], run_id: str):
+        """Yield SDXL BrushNet progress events across the Modal serialization boundary."""
+
+        from painting_inpaint_backend.core.progress import ProgressReporter
+        from painting_inpaint_backend.core.streaming import stream_inference_events
+
+        if self.enter_error is not None:
+            reporter = ProgressReporter(run_id=run_id, enabled=True)
+            yield json_response(
+                reporter.error(
+                    stage="container_initialization",
+                    message=self.enter_error["error"],
+                    metadata=self.enter_error,
+                )
+            )
+            return
+
+        started = time.perf_counter()
+        assert self.service is not None
+        for event in stream_inference_events(
+            payload,
+            service=self.service,
+            run_id=run_id,
+            provider="modal",
+            received_message="Modal SDXL BrushNet request received.",
+            completion_message="Modal SDXL BrushNet restoration completed.",
+            received_metadata={"stream_progress": True, "method": "sdxl_brushnet"},
         ):
             if event.get("type") == "final" and isinstance(event.get("output"), dict):
                 timings = event["output"].setdefault("timings", {})
@@ -646,6 +1119,11 @@ def restoration_api():
             FLUX_CANNY_LANPAINT_NATIVE_METHOD,
             FLUX_FILL_CANNY_FILL_METHOD,
             FLUX_FILL_CANNY_NATIVE_METHOD,
+            QWEN_EDIT_METHOD,
+            SD15_INPAINT_METHOD,
+            SD35_INPAINT_METHOD,
+            SDXL_BRUSHNET_METHOD,
+            SDXL_INPAINT_METHOD,
             normalize_method,
         )
 
@@ -704,6 +1182,31 @@ def restoration_api():
                 )
             elif method == FLUX_FILL_CANNY_FILL_METHOD:
                 yield from FluxFillCannyFillModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == SD15_INPAINT_METHOD:
+                yield from SD15ModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == SDXL_INPAINT_METHOD:
+                yield from SDXLModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == QWEN_EDIT_METHOD:
+                yield from QwenEditModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == SD35_INPAINT_METHOD:
+                yield from SD35ModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == SDXL_BRUSHNET_METHOD:
+                yield from SDXLBrushNetModalBackend().restore_stream.remote_gen(
                     payload,
                     run_id,
                 )

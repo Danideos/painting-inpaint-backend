@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from base64 import b64decode
 from contextlib import nullcontext
+from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +16,8 @@ from painting_inpaint_backend.core.inference import (
     parse_request_settings,
 )
 from painting_inpaint_backend.core.model_loading import LoadedPipeline
+from painting_inpaint_backend.core.sd15_service import SD15InferenceService
+from painting_inpaint_backend.core.sd_inpaint_base import LoadedSDPipeline
 
 
 class _FakeTorch:
@@ -30,6 +34,15 @@ class _FakeInferencePipeline:
         self.adapter_calls.append((list(adapter_names), list(adapter_weights)))
 
     def __call__(self, **kwargs):
+        return SimpleNamespace(images=[Image.new("RGB", kwargs["image"].size, "blue")])
+
+
+class _FakeSDPipeline:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
         return SimpleNamespace(images=[Image.new("RGB", kwargs["image"].size, "blue")])
 
 
@@ -68,6 +81,10 @@ def _base64_request(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def _decode_response_image(encoded: str) -> Image.Image:
+    return Image.open(BytesIO(b64decode(encoded))).convert("RGB")
 
 
 def test_parse_request_settings_defaults_partial_noise_to_full_schedule():
@@ -127,3 +144,41 @@ def test_worker_reports_default_and_request_specific_lora_scales():
         (["durer"], [0.5]),
         (["durer"], [0.0]),
     ]
+
+
+def test_sd15_service_hard_composites_and_reports_baseline_settings():
+    pipe = _FakeSDPipeline()
+    worker = SD15InferenceService()
+    worker._loaded = LoadedSDPipeline(
+        pipe=pipe,
+        torch=_FakeTorch(),
+        torch_dtype="fake",
+        model={"method": "sd15_inpaint", "model_id": "fake-sd15"},
+        supports_negative_prompt=True,
+        timings={"from_pretrained_seconds": 0.0},
+    )
+    image = Image.new("RGB", (2, 2), "red")
+    mask = Image.new("L", (2, 2), 0)
+    mask.putpixel((0, 0), 255)
+
+    response = worker.run(
+        {
+            "method": "sd15_inpaint",
+            "prompt": "",
+            "negative_prompt": "bad",
+            "image_base64": image_to_base64(image),
+            "mask_base64": image_to_base64(mask),
+            "guidance_scale": 7.5,
+            "num_inference_steps": 30,
+            "strength": 0.8,
+        }
+    )
+    restored = _decode_response_image(response["image_base64"])
+
+    assert restored.getpixel((0, 0)) == (0, 0, 255)
+    assert restored.getpixel((1, 1)) == (255, 0, 0)
+    assert response["model"]["method"] == "sd15_inpaint"
+    assert response["inference_settings"]["strength"] == 0.8
+    assert response["inference_settings"]["negative_prompt"] == "bad"
+    assert pipe.calls[0]["strength"] == 0.8
+    assert pipe.calls[0]["negative_prompt"] == "bad"

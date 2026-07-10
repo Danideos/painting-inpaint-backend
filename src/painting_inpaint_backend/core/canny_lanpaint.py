@@ -175,9 +175,12 @@ def parse_canny_lanpaint_settings(payload: dict[str, Any]) -> CannyLanPaintReque
         raise WorkerInputError("reencode_source_latent_interval must be non-negative.")
 
     canny_control_strategy = payload.get("canny_control_strategy", None)
-    if canny_control_strategy is not None and canny_control_strategy not in {"masked_ink"}:
+    if canny_control_strategy is not None and canny_control_strategy not in {
+        "masked_ink",
+        "plain_canny",
+    }:
         raise WorkerInputError(
-            "canny_control_strategy must be 'masked_ink' or omitted."
+            "canny_control_strategy must be 'masked_ink', 'plain_canny', or omitted."
         )
 
     return CannyLanPaintRequestSettings(
@@ -904,7 +907,11 @@ class FluxCannyLanPaintService:
         control_started = time.perf_counter()
         use_masked_ink = (
             method_settings.canny_control_strategy == "masked_ink"
-            or (not self.native_lanpaint and control_source_name == "input_image")
+            or (
+                method_settings.canny_control_strategy != "plain_canny"
+                and not self.native_lanpaint
+                and control_source_name == "input_image"
+            )
         )
         if use_masked_ink:
             canny_control = make_masked_canny_control(
@@ -1212,8 +1219,10 @@ class FluxCannyLanPaintService:
                 "height": composite.height,
             },
         )
+        canny_control_encoded = image_to_base64(canny_control, output_format="png")
         return {
             "image_base64": encoded,
+            "canny_control_image_base64": canny_control_encoded,
             "output_format": settings.output_format,
             "width": composite.width,
             "height": composite.height,

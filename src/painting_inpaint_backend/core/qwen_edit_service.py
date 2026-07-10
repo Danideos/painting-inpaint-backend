@@ -12,7 +12,7 @@ from typing import Any
 
 from PIL import Image
 
-from .image_helpers import hard_composite, mask_coverage, outside_mask_changed
+from .image_helpers import binarize_mask, hard_composite, mask_coverage, outside_mask_changed
 from .image_io import image_to_base64, normalize_output_format
 from .inference import (
     WorkerInputError,
@@ -33,6 +33,15 @@ from .sd_inpaint_base import LoadedSDPipeline
 LOGGER = logging.getLogger(__name__)
 
 QWEN_EDIT_MODEL_ID = "Qwen/Qwen-Image-Edit"
+QWEN_MASKED_REGION_FILL_RGB = (255, 255, 255)
+
+
+def make_qwen_source_image(image: Image.Image, mask: Image.Image) -> Image.Image:
+    """Hide masked pixels before Qwen's image-conditioning path sees the source."""
+
+    source = image.convert("RGB").copy()
+    source.paste(QWEN_MASKED_REGION_FILL_RGB, mask=binarize_mask(mask))
+    return source
 
 
 @dataclass(frozen=True)
@@ -216,6 +225,7 @@ class QwenEditInferenceService:
             "device_mode": device_mode,
             "pipeline_class": type(pipe).__name__,
             "mask_route": "native_diffusers_mask_image",
+            "source_image_route": "masked_region_filled_before_qwen_image_conditioning",
         }
         if reporter is not None:
             reporter.emit(
@@ -257,6 +267,7 @@ class QwenEditInferenceService:
             message="Decoding request image and mask.",
         )
         image, mask = load_request_images(payload)
+        qwen_source_image = make_qwen_source_image(image, mask)
         mask_fraction = mask_coverage(mask)
         reporter.emit(
             "input_decode_done",
@@ -268,6 +279,7 @@ class QwenEditInferenceService:
                 "mask_width": mask.width,
                 "mask_height": mask.height,
                 "mask_coverage": mask_fraction,
+                "qwen_masked_source_fill_rgb": QWEN_MASKED_REGION_FILL_RGB,
             },
         )
 
@@ -282,7 +294,7 @@ class QwenEditInferenceService:
         call_kwargs: dict[str, Any] = {
             "prompt": settings.prompt,
             "negative_prompt": settings.negative_prompt,
-            "image": image,
+            "image": qwen_source_image,
             "mask_image": mask,
             "height": image.height,
             "width": image.width,
@@ -403,6 +415,7 @@ class QwenEditInferenceService:
                 "padding_mask_crop": settings.padding_mask_crop,
                 "seed": settings.seed,
                 "mask_coverage": mask_fraction,
+                "qwen_masked_source_fill_rgb": QWEN_MASKED_REGION_FILL_RGB,
             },
             "outside_mask_changed_after_hard_composite": changed_outside_mask,
         }

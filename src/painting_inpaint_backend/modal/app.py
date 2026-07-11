@@ -412,7 +412,7 @@ class SDXLModalBackend:
     include_source=False,
 )
 class QwenEditModalBackend:
-    """Scale-to-zero Qwen-Image-Edit inpainting service."""
+    """Scale-to-zero Qwen-Image-Edit service using LanPaint inpainting."""
 
     @modal.enter()
     def enter(self) -> None:
@@ -430,7 +430,7 @@ class QwenEditModalBackend:
 
     @modal.method()
     def restore(self, payload: dict[str, Any]) -> str:
-        """Run one Qwen masked editing request."""
+        """Run one Qwen LanPaint masked inpainting request."""
 
         if self.enter_error is not None:
             return json_response({"modal_error": self.enter_error})
@@ -472,8 +472,8 @@ class QwenEditModalBackend:
             service=self.service,
             run_id=run_id,
             provider="modal",
-            received_message="Modal Qwen-Image-Edit request received.",
-            completion_message="Modal Qwen-Image-Edit restoration completed.",
+            received_message="Modal Qwen-Image-Edit LanPaint request received.",
+            completion_message="Modal Qwen-Image-Edit LanPaint restoration completed.",
             received_metadata={"stream_progress": True, "method": "qwen_edit"},
         ):
             if event.get("type") == "final" and isinstance(event.get("output"), dict):

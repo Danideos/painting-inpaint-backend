@@ -48,6 +48,7 @@ class SDXLBrushNetSettings:
     negative_prompt: str
     guidance_scale: float
     brushnet_conditioning_scale: float
+    guess_mode: bool
     num_inference_steps: int
     seed: int | None
     output_format: str
@@ -81,6 +82,10 @@ def parse_sdxl_brushnet_settings(payload: dict[str, Any]) -> SDXLBrushNetSetting
     if brushnet_conditioning_scale < 0:
         raise WorkerInputError("brushnet_conditioning_scale must be non-negative.")
 
+    guess_mode = payload.get("guess_mode", False)
+    if not isinstance(guess_mode, bool):
+        raise WorkerInputError("guess_mode must be a boolean.")
+
     num_inference_steps = _optional_int(payload, "num_inference_steps", 50)
     if num_inference_steps <= 0:
         raise WorkerInputError("num_inference_steps must be positive.")
@@ -104,6 +109,7 @@ def parse_sdxl_brushnet_settings(payload: dict[str, Any]) -> SDXLBrushNetSetting
         negative_prompt=str(payload.get("negative_prompt", "")),
         guidance_scale=guidance_scale,
         brushnet_conditioning_scale=brushnet_conditioning_scale,
+        guess_mode=guess_mode,
         num_inference_steps=num_inference_steps,
         seed=seed,
         output_format=output_format,
@@ -366,6 +372,7 @@ class SDXLBrushNetInferenceService:
             "num_inference_steps": settings.num_inference_steps,
             "guidance_scale": settings.guidance_scale,
             "brushnet_conditioning_scale": settings.brushnet_conditioning_scale,
+            "guess_mode": settings.guess_mode,
         }
         if generator is not None:
             call_kwargs["generator"] = generator
@@ -390,6 +397,7 @@ class SDXLBrushNetInferenceService:
                     "num_inference_steps": settings.num_inference_steps,
                     "guidance_scale": settings.guidance_scale,
                     "brushnet_conditioning_scale": settings.brushnet_conditioning_scale,
+                    "guess_mode": settings.guess_mode,
                     "seed": settings.seed,
                 },
             )
@@ -471,6 +479,7 @@ class SDXLBrushNetInferenceService:
                 "negative_prompt": settings.negative_prompt,
                 "guidance_scale": settings.guidance_scale,
                 "brushnet_conditioning_scale": settings.brushnet_conditioning_scale,
+                "guess_mode": settings.guess_mode,
                 "num_inference_steps": settings.num_inference_steps,
                 "seed": settings.seed,
                 "mask_coverage": mask_fraction,

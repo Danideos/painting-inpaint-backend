@@ -16,6 +16,7 @@ from painting_inpaint_backend.core.qwen_edit_service import (
     QWEN_MASKED_REGION_FILL_RGB,
     make_qwen_source_image,
     parse_qwen_edit_settings,
+    parse_qwen_native_pipeline_flag,
 )
 
 
@@ -65,3 +66,11 @@ def test_qwen_settings_default_to_lanpaint_route_controls():
 def test_qwen_lanpaint_rejects_native_padding_mask_crop():
     with pytest.raises(WorkerInputError, match="padding_mask_crop is not supported"):
         parse_qwen_edit_settings({"method": "qwen_edit", "padding_mask_crop": 16})
+
+
+def test_qwen_native_pipeline_flag_is_explicit_and_boolean_only():
+    assert parse_qwen_native_pipeline_flag({}) is False
+    assert parse_qwen_native_pipeline_flag({"qwen_native_pipeline": True}) is True
+
+    with pytest.raises(WorkerInputError, match="qwen_native_pipeline must be a boolean"):
+        parse_qwen_native_pipeline_flag({"qwen_native_pipeline": "true"})

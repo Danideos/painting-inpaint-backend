@@ -18,7 +18,9 @@ from .image_helpers import binarize_mask, hard_composite, mask_coverage, outside
 from .image_io import image_to_base64, normalize_output_format
 from .inference import (
     WorkerInputError,
+    _add_inference_progress_callback,
     _cuda_memory_stats,
+    _effective_step_total,
     _json_timestep,
     _optional_float,
     _optional_int,
@@ -36,6 +38,7 @@ LOGGER = logging.getLogger(__name__)
 QWEN_EDIT_MODEL_ID = "Qwen/Qwen-Image-Edit"
 QWEN_MASKED_REGION_FILL_RGB = (255, 255, 255)
 QWEN_LANPAINT_BACKEND_REVISION = "qwen-image-edit-lanpaint-v1"
+QWEN_NATIVE_EXPERIMENT_REVISION = "qwen-image-edit-native-experiment-v1"
 QWEN_LANPAINT_SOURCE_FILL_RADIUS = 3.0
 QWEN_LANPAINT_INNER_STEPS = 10
 QWEN_LANPAINT_FRICTION = 15.0
@@ -88,6 +91,15 @@ def _free_qwen_offloaded_modules(pipe: Any, torch: Any) -> None:
         maybe_free()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def parse_qwen_native_pipeline_flag(payload: dict[str, Any]) -> bool:
+    """Validate the hidden native-pipeline experiment switch."""
+
+    value = payload.get("qwen_native_pipeline", False)
+    if not isinstance(value, bool):
+        raise WorkerInputError("qwen_native_pipeline must be a boolean.")
+    return value
 
 
 @dataclass(frozen=True)
@@ -652,6 +664,138 @@ class QwenEditInferenceService:
             timings=timings,
         )
 
+    def _run_native_pipeline(
+        self,
+        *,
+        image: Image.Image,
+        mask: Image.Image,
+        mask_fraction: float,
+        settings: QwenEditSettings,
+        reporter: ProgressReporter,
+        include_progress_history: bool,
+    ) -> dict[str, Any]:
+        """Run an explicit native-pipeline experiment without changing LanPaint defaults."""
+
+        loaded = self.get_loaded(reporter=reporter)
+        pipe = loaded.pipe
+        torch = loaded.torch
+        generator = torch.Generator(device="cpu")
+        if settings.seed is not None:
+            generator.manual_seed(settings.seed)
+        else:
+            generator.seed()
+
+        call_kwargs: dict[str, Any] = {
+            "prompt": settings.prompt,
+            "negative_prompt": settings.negative_prompt,
+            "image": image,
+            "mask_image": mask,
+            "height": image.height,
+            "width": image.width,
+            "strength": settings.strength,
+            "num_inference_steps": settings.num_inference_steps,
+            "true_cfg_scale": settings.guidance_scale,
+            "max_sequence_length": settings.max_sequence_length,
+            "generator": generator,
+        }
+        _add_inference_progress_callback(
+            call_kwargs=call_kwargs,
+            pipe=pipe,
+            settings=settings,  # type: ignore[arg-type]
+            reporter=reporter,
+        )
+
+        with TemporaryDirectory(prefix="qwen_native_experiment_") as temp_dir:
+            temp_path = Path(temp_dir)
+            memory_before_inference = _cuda_memory_stats(torch, prefix="pre_inference_")
+            _reset_cuda_peak_memory(torch)
+            reporter.emit(
+                "inference_start",
+                stage="inference",
+                message="Starting native Qwen-Image-Edit inpainting inference.",
+                progress={"current": 0, "total": settings.num_inference_steps},
+                metadata={
+                    "method": settings.method,
+                    "backend_revision": QWEN_NATIVE_EXPERIMENT_REVISION,
+                    "num_inference_steps": settings.num_inference_steps,
+                    "strength": settings.strength,
+                    "guidance_scale": settings.guidance_scale,
+                    "seed": settings.seed,
+                },
+            )
+            inference_started = time.perf_counter()
+            with torch.inference_mode():
+                raw = pipe(**call_kwargs).images[0].convert("RGB")
+            inference_seconds = time.perf_counter() - inference_started
+            inference_memory = {
+                **memory_before_inference,
+                **_cuda_memory_stats(torch, prefix="inference_"),
+            }
+            reporter.emit(
+                "inference_done",
+                stage="inference",
+                message="Native Qwen-Image-Edit inpainting inference completed.",
+                progress={
+                    "current": _effective_step_total(pipe, settings),  # type: ignore[arg-type]
+                    "total": _effective_step_total(pipe, settings),  # type: ignore[arg-type]
+                },
+                metadata={
+                    "inference_seconds": inference_seconds,
+                    "gpu_memory": inference_memory,
+                },
+            )
+
+            if raw.size != image.size:
+                raw = raw.resize(image.size, Image.Resampling.LANCZOS)
+            composite = hard_composite(image, raw, mask)
+            changed_outside_mask = outside_mask_changed(image, composite, mask)
+            if changed_outside_mask:
+                raise RuntimeError("Hard composite changed pixels outside the edit mask.")
+
+            output_path = temp_path / f"composite.{settings.output_format}"
+            composite.save(output_path)
+            encoded = image_to_base64(composite, output_format=settings.output_format)
+
+        native_model = {
+            **loaded.model,
+            "mask_route": "native_diffusers_mask_image",
+            "source_image_route": "original_image_passed_to_native_pipeline",
+            "denoising_backend": "QwenImageEditInpaintPipeline",
+            "backend_revision": QWEN_NATIVE_EXPERIMENT_REVISION,
+            "native_pipeline_call": True,
+        }
+        output = {
+            "image_base64": encoded,
+            "output_format": settings.output_format,
+            "width": composite.width,
+            "height": composite.height,
+            "mask_convention": "white = inpaint/edit, black = preserve",
+            "timings": {
+                **loaded.timings,
+                "inference_seconds": inference_seconds,
+            },
+            "gpu_memory": inference_memory,
+            "model": native_model,
+            "inference_settings": {
+                "method": settings.method,
+                "backend_revision": QWEN_NATIVE_EXPERIMENT_REVISION,
+                "prompt": settings.prompt,
+                "negative_prompt": settings.negative_prompt,
+                "strength": settings.strength,
+                "guidance_scale": settings.guidance_scale,
+                "guidance_scale_passed_as": "true_cfg_scale",
+                "num_inference_steps": settings.num_inference_steps,
+                "max_sequence_length": settings.max_sequence_length,
+                "seed": settings.seed,
+                "mask_coverage": mask_fraction,
+                "native_pipeline_call": True,
+            },
+            "outside_mask_changed_after_hard_composite": changed_outside_mask,
+        }
+        if include_progress_history:
+            output["run_report"] = {"progress_events": reporter.history}
+        return output
+
     def run(
         self,
         payload: dict[str, Any],
@@ -669,14 +813,39 @@ class QwenEditInferenceService:
                 keep_history=include_progress_history,
             )
         settings = parse_qwen_edit_settings(payload)
+        native_pipeline = parse_qwen_native_pipeline_flag(payload)
         reporter.emit(
             "input_decode_start",
             stage="input",
             message="Decoding request image and mask.",
         )
         image, mask = load_request_images(payload)
-        qwen_source_image = make_qwen_lanpaint_source_image(image, mask)
         mask_fraction = mask_coverage(mask)
+        if native_pipeline:
+            reporter.emit(
+                "input_decode_done",
+                stage="input",
+                message="Request image and mask decoded for native Qwen experiment.",
+                metadata={
+                    "image_width": image.width,
+                    "image_height": image.height,
+                    "mask_width": mask.width,
+                    "mask_height": mask.height,
+                    "mask_coverage": mask_fraction,
+                    "backend_revision": QWEN_NATIVE_EXPERIMENT_REVISION,
+                    "native_pipeline_call": True,
+                },
+            )
+            return self._run_native_pipeline(
+                image=image,
+                mask=mask,
+                mask_fraction=mask_fraction,
+                settings=settings,
+                reporter=reporter,
+                include_progress_history=include_progress_history,
+            )
+
+        qwen_source_image = make_qwen_lanpaint_source_image(image, mask)
         reporter.emit(
             "input_decode_done",
             stage="input",
@@ -957,4 +1126,5 @@ __all__ = [
     "QwenEditInferenceService",
     "make_qwen_lanpaint_source_image",
     "parse_qwen_edit_settings",
+    "parse_qwen_native_pipeline_flag",
 ]

@@ -80,6 +80,16 @@ def _qwen_noise_scaling(sigma: Any, noise: Any, latent_image: Any) -> Any:
     return (1.0 - sigma) * latent_image + sigma * noise
 
 
+def _free_qwen_offloaded_modules(pipe: Any, torch: Any) -> None:
+    """Force offloaded Qwen modules off GPU between custom pipeline phases."""
+
+    maybe_free = getattr(pipe, "maybe_free_model_hooks", None)
+    if maybe_free is not None:
+        maybe_free()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 @dataclass(frozen=True)
 class QwenEditSettings:
     """Validated scalar settings for Qwen LanPaint masked inpainting."""
@@ -728,6 +738,7 @@ class QwenEditInferenceService:
                 guidance_scale=None,
                 max_sequence_length=settings.max_sequence_length,
             )
+            _free_qwen_offloaded_modules(pipe, torch)
             latents, noise, source_latent, timesteps = adapter.prepare_source_latents(
                 source_image=qwen_source_image,
                 generator=generator,
@@ -735,6 +746,7 @@ class QwenEditInferenceService:
                 strength=settings.strength,
             )
             keep_mask, edit_mask = adapter.mask_edit_to_latents(mask)
+            _free_qwen_offloaded_modules(pipe, torch)
             model = QwenLanPaintModelWrapper(adapter)
 
             try:
@@ -820,6 +832,7 @@ class QwenEditInferenceService:
                         progress={"current": index + 1, "total": len(timesteps)},
                         metadata=step_record,
                     )
+                _free_qwen_offloaded_modules(pipe, torch)
                 raw = adapter.decode_latents(latents)
             inference_seconds = time.perf_counter() - inference_started
             inference_memory = {

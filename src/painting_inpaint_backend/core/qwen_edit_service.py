@@ -589,7 +589,13 @@ class QwenEditInferenceService:
         timings["from_pretrained_seconds"] = time.perf_counter() - load_started
 
         device_started = time.perf_counter()
-        if env_flag("ENABLE_MODEL_CPU_OFFLOAD", default=True) and hasattr(
+        if env_flag("ENABLE_QWEN_SEQUENTIAL_CPU_OFFLOAD", default=True) and hasattr(
+            pipe,
+            "enable_sequential_cpu_offload",
+        ):
+            pipe.enable_sequential_cpu_offload()
+            device_mode = "sequential_cpu_offload"
+        elif env_flag("ENABLE_MODEL_CPU_OFFLOAD", default=True) and hasattr(
             pipe,
             "enable_model_cpu_offload",
         ):

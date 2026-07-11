@@ -19,7 +19,7 @@ FROM base AS fill
 ENV MODEL_ID=black-forest-labs/FLUX.1-Fill-dev \
     LORA_PATH=/app/assets/loras/pytorch_lora_weights.safetensors
 
-RUN uv export --frozen --no-dev --extra inference --extra runpod \
+RUN uv export --frozen --no-dev --extra inference --extra runpod --extra canny \
         --no-emit-project --output-file /tmp/backend-requirements.txt \
     && uv pip install --system --requirements /tmp/backend-requirements.txt
 

@@ -658,6 +658,88 @@ class SD35ModalBackend:
 
 
 @app.cls(
+    image=sd35_inference_image,
+    gpu=SD35_GPU_TYPE,
+    volumes={str(SD35_MODELS_DIR): sd35_model_volume},
+    timeout=2400,
+    scaledown_window=2,
+    include_source=False,
+)
+class SD3LanPaintModalBackend:
+    """Scale-to-zero SD3-medium LanPaint inpainting service."""
+
+    @modal.enter()
+    def enter(self) -> None:
+        from painting_inpaint_backend.core.sd3_lanpaint_service import (
+            SD3LanPaintInferenceService,
+        )
+
+        started = time.perf_counter()
+        self.service = None
+        self.enter_error = None
+        try:
+            self.service = SD3LanPaintInferenceService()
+        except Exception as exc:
+            self.enter_error = safe_remote_error(exc, stage="container_initialization")
+        finally:
+            self.container_enter_seconds = time.perf_counter() - started
+
+    @modal.method()
+    def restore(self, payload: dict[str, Any]) -> str:
+        """Run one SD3-medium LanPaint restoration request."""
+
+        if self.enter_error is not None:
+            return json_response({"modal_error": self.enter_error})
+        try:
+            started = time.perf_counter()
+            assert self.service is not None
+            output = self.service.run(payload)
+            timings = output.setdefault("timings", {})
+            timings["modal_container_enter_seconds"] = self.container_enter_seconds
+            timings["modal_request_seconds"] = time.perf_counter() - started
+            return json_response(output)
+        except Exception as exc:
+            return json_response(
+                {"modal_error": safe_remote_error(exc, stage="request_inference")}
+            )
+
+    @modal.method()
+    def restore_stream(self, payload: dict[str, Any], run_id: str):
+        """Yield SD3 LanPaint progress events across the Modal serialization boundary."""
+
+        from painting_inpaint_backend.core.progress import ProgressReporter
+        from painting_inpaint_backend.core.streaming import stream_inference_events
+
+        if self.enter_error is not None:
+            reporter = ProgressReporter(run_id=run_id, enabled=True)
+            yield json_response(
+                reporter.error(
+                    stage="container_initialization",
+                    message=self.enter_error["error"],
+                    metadata=self.enter_error,
+                )
+            )
+            return
+
+        started = time.perf_counter()
+        assert self.service is not None
+        for event in stream_inference_events(
+            payload,
+            service=self.service,
+            run_id=run_id,
+            provider="modal",
+            received_message="Modal SD3 LanPaint request received.",
+            completion_message="Modal SD3 LanPaint restoration completed.",
+            received_metadata={"stream_progress": True, "method": "sd3_lanpaint"},
+        ):
+            if event.get("type") == "final" and isinstance(event.get("output"), dict):
+                timings = event["output"].setdefault("timings", {})
+                timings["modal_container_enter_seconds"] = self.container_enter_seconds
+                timings["modal_request_seconds"] = time.perf_counter() - started
+            yield json_response(event)
+
+
+@app.cls(
     image=sdxl_brushnet_inference_image,
     gpu=SDXL_BRUSHNET_GPU_TYPE,
     volumes={str(SDXL_BRUSHNET_MODELS_DIR): sdxl_brushnet_model_volume},
@@ -1217,6 +1299,7 @@ def restoration_api():
             QWEN_IMAGE_INPAINT_METHOD,
             QWEN_IMAGE_LANPAINT_METHOD,
             QWEN_IMAGE_METHOD,
+            SD3_LANPAINT_METHOD,
             SD15_INPAINT_METHOD,
             SD35_INPAINT_METHOD,
             SDXL_BRUSHNET_METHOD,
@@ -1309,6 +1392,11 @@ def restoration_api():
                 )
             elif method == QWEN_IMAGE_LANPAINT_METHOD:
                 yield from QwenImageModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == SD3_LANPAINT_METHOD:
+                yield from SD3LanPaintModalBackend().restore_stream.remote_gen(
                     payload,
                     run_id,
                 )

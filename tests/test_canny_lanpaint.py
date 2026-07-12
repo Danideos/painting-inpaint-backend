@@ -49,6 +49,7 @@ def test_method_defaults_to_fill_and_accepts_canny():
     assert normalize_method("qwen_image") == "qwen_image"
     assert normalize_method("qwen_image_inpaint") == "qwen_image_inpaint"
     assert normalize_method("qwen_image_lanpaint") == "qwen_image_lanpaint"
+    assert normalize_method("sd3_lanpaint") == "sd3_lanpaint"
     assert normalize_method("sd35_inpaint") == "sd35_inpaint"
     assert normalize_method("sdxl_brushnet") == "sdxl_brushnet"
     with pytest.raises(ValueError, match="method must be one of"):

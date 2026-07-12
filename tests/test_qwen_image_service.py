@@ -5,7 +5,9 @@ import pytest
 from painting_inpaint_backend.core.inference import WorkerInputError
 from painting_inpaint_backend.core.qwen_image_service import (
     QWEN_IMAGE_BACKEND_REVISION,
+    QWEN_IMAGE_INPAINT_BACKEND_REVISION,
     QWEN_IMAGE_MODEL_ID,
+    parse_qwen_image_inpaint_settings,
     parse_qwen_image_settings,
 )
 
@@ -62,6 +64,45 @@ def test_qwen_image_true_cfg_scale_takes_precedence_over_guidance_alias():
     assert settings.true_cfg_scale == 5.0
 
 
+def test_qwen_image_inpaint_settings_default_to_native_inpaint_controls():
+    settings = parse_qwen_image_inpaint_settings({"method": "qwen_image_inpaint"})
+
+    assert QWEN_IMAGE_INPAINT_BACKEND_REVISION == "qwen-image-native-inpaint-v1"
+    assert settings.method == "qwen_image_inpaint"
+    assert settings.prompt == ""
+    assert settings.negative_prompt == " "
+    assert settings.true_cfg_scale == 4.0
+    assert settings.num_inference_steps == 50
+    assert settings.strength == 1.0
+    assert settings.max_sequence_length == 512
+    assert settings.padding_mask_crop is None
+    assert settings.qwen_source_strategy == "telea"
+
+
+def test_qwen_image_inpaint_settings_accept_native_controls():
+    settings = parse_qwen_image_inpaint_settings(
+        {
+            "method": "qwen_image_inpaint",
+            "prompt": "restore the painted folds",
+            "negative_prompt": " ",
+            "guidance_scale": 3.5,
+            "strength": 0.65,
+            "num_inference_steps": 12,
+            "seed": "123",
+            "padding_mask_crop": "32",
+            "qwen_source_strategy": "original",
+        }
+    )
+
+    assert settings.prompt == "restore the painted folds"
+    assert settings.true_cfg_scale == 3.5
+    assert settings.strength == 0.65
+    assert settings.num_inference_steps == 12
+    assert settings.seed == 123
+    assert settings.padding_mask_crop == 32
+    assert settings.qwen_source_strategy == "original"
+
+
 @pytest.mark.parametrize(
     "payload, message",
     [
@@ -76,3 +117,18 @@ def test_qwen_image_true_cfg_scale_takes_precedence_over_guidance_alias():
 def test_qwen_image_settings_reject_invalid_values(payload, message):
     with pytest.raises(WorkerInputError, match=message):
         parse_qwen_image_settings(payload)
+
+
+@pytest.mark.parametrize(
+    "payload, message",
+    [
+        ({"method": "qwen_image_inpaint", "prompt": 123}, "prompt"),
+        ({"method": "qwen_image_inpaint", "strength": -0.1}, "strength"),
+        ({"method": "qwen_image_inpaint", "strength": 1.1}, "strength"),
+        ({"method": "qwen_image_inpaint", "num_inference_steps": 0}, "steps"),
+        ({"method": "qwen_image_inpaint", "padding_mask_crop": -1}, "padding_mask_crop"),
+    ],
+)
+def test_qwen_image_inpaint_settings_reject_invalid_values(payload, message):
+    with pytest.raises(WorkerInputError, match=message):
+        parse_qwen_image_inpaint_settings(payload)

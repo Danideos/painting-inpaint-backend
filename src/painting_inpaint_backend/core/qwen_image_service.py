@@ -29,6 +29,7 @@ from .inference import (
     load_request_images,
 )
 from .methods import (
+    QWEN_IMAGE_INPAINT_METHOD,
     QWEN_IMAGE_LANPAINT_METHOD,
     QWEN_IMAGE_METHOD,
     RestorationMethod,
@@ -55,6 +56,7 @@ LOGGER = logging.getLogger(__name__)
 
 QWEN_IMAGE_MODEL_ID = "Qwen/Qwen-Image"
 QWEN_IMAGE_BACKEND_REVISION = "qwen-image-text-to-image-v1"
+QWEN_IMAGE_INPAINT_BACKEND_REVISION = "qwen-image-native-inpaint-v1"
 QWEN_IMAGE_LANPAINT_BACKEND_REVISION = "qwen-image-lanpaint-v1"
 QWEN_IMAGE_DEFAULT_SIZE = 1024
 QWEN_IMAGE_DIMENSION_MULTIPLE = 16
@@ -95,6 +97,23 @@ class QwenImageLanPaintSettings:
     lanpaint_beta: float
     lanpaint_step_size: float
     lanpaint_final_outer_steps_without_inner: int
+
+
+@dataclass(frozen=True)
+class QwenImageInpaintSettings:
+    """Validated scalar settings for native Qwen-Image inpainting."""
+
+    method: RestorationMethod
+    prompt: str
+    negative_prompt: str
+    true_cfg_scale: float
+    num_inference_steps: int
+    strength: float
+    seed: int | None
+    output_format: str
+    max_sequence_length: int
+    padding_mask_crop: int | None
+    qwen_source_strategy: str
 
 
 def _parse_dimension(payload: dict[str, Any], key: str) -> int:
@@ -142,6 +161,19 @@ def _parse_seed(payload: dict[str, Any]) -> int | None:
         return int(seed_value)
     except (TypeError, ValueError) as exc:
         raise WorkerInputError("seed must be an integer when provided.") from exc
+
+
+def _parse_padding_mask_crop(payload: dict[str, Any]) -> int | None:
+    value = payload.get("padding_mask_crop")
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise WorkerInputError("padding_mask_crop must be an integer when provided.") from exc
+    if parsed < 0:
+        raise WorkerInputError("padding_mask_crop must be non-negative.")
+    return parsed
 
 
 def parse_qwen_image_settings(payload: dict[str, Any]) -> QwenImageSettings:
@@ -193,6 +225,53 @@ def parse_qwen_image_settings(payload: dict[str, Any]) -> QwenImageSettings:
         seed=seed,
         output_format=output_format,
         max_sequence_length=max_sequence_length,
+    )
+
+
+def parse_qwen_image_inpaint_settings(payload: dict[str, Any]) -> QwenImageInpaintSettings:
+    """Validate request scalar parameters for native Qwen-Image inpainting."""
+
+    try:
+        method = normalize_method(payload.get("method"))
+    except ValueError as exc:
+        raise WorkerInputError(str(exc)) from exc
+    if method != QWEN_IMAGE_INPAINT_METHOD:
+        raise WorkerInputError(
+            f"The service only accepts method={QWEN_IMAGE_INPAINT_METHOD!r}."
+        )
+
+    prompt = _parse_lanpaint_prompt(payload)
+    true_cfg_scale = _parse_true_cfg_scale(payload)
+
+    num_inference_steps = _optional_int(payload, "num_inference_steps", 50)
+    if num_inference_steps <= 0:
+        raise WorkerInputError("num_inference_steps must be positive.")
+
+    strength = _optional_float(payload, "strength", 1.0)
+    if strength < 0 or strength > 1:
+        raise WorkerInputError("strength must be between 0 and 1.")
+
+    max_sequence_length = _optional_int(payload, "max_sequence_length", 512)
+    if max_sequence_length <= 0:
+        raise WorkerInputError("max_sequence_length must be positive.")
+
+    try:
+        output_format = normalize_output_format(payload.get("output_format", "png"))
+    except ValueError as exc:
+        raise WorkerInputError(str(exc)) from exc
+
+    return QwenImageInpaintSettings(
+        method=method,
+        prompt=prompt,
+        negative_prompt=str(payload.get("negative_prompt", " ")),
+        true_cfg_scale=true_cfg_scale,
+        num_inference_steps=num_inference_steps,
+        strength=strength,
+        seed=_parse_seed(payload),
+        output_format=output_format,
+        max_sequence_length=max_sequence_length,
+        padding_mask_crop=_parse_padding_mask_crop(payload),
+        qwen_source_strategy=parse_qwen_source_strategy(payload),
     )
 
 
@@ -575,6 +654,7 @@ class QwenImageInferenceService:
 
     def __init__(self) -> None:
         self._loaded: LoadedSDPipeline | None = None
+        self._inpaint_loaded: LoadedSDPipeline | None = None
 
     @property
     def loaded(self) -> LoadedSDPipeline:
@@ -681,6 +761,125 @@ class QwenImageInferenceService:
                 "model_load_done",
                 stage="model",
                 message=f"{self.pipeline_display_name} pipeline loaded.",
+                metadata={**model, "timings": timings},
+            )
+
+        return LoadedSDPipeline(
+            pipe=pipe,
+            torch=torch,
+            torch_dtype=torch.bfloat16,
+            model=model,
+            supports_negative_prompt=True,
+            timings=timings,
+        )
+
+    def get_inpaint_loaded(
+        self,
+        *,
+        reporter: ProgressReporter | None = None,
+    ) -> LoadedSDPipeline:
+        display_name = "Qwen-Image native inpainting"
+        if self._inpaint_loaded is None:
+            started = time.perf_counter()
+            self._inpaint_loaded = self._load_inpaint_pipeline(reporter=reporter)
+            LOGGER.info("%s pipeline ready in %.3fs", display_name, time.perf_counter() - started)
+        elif reporter is not None:
+            reporter.emit(
+                "model_load_start",
+                stage="model",
+                message=f"Reusing cached {display_name} pipeline.",
+                metadata={"cached": True, "method": QWEN_IMAGE_INPAINT_METHOD},
+            )
+            reporter.emit(
+                "model_load_done",
+                stage="model",
+                message=f"Cached {display_name} pipeline ready.",
+                metadata={"cached": True, "model": self._inpaint_loaded.model},
+            )
+        return self._inpaint_loaded
+
+    def _load_inpaint_pipeline(
+        self,
+        *,
+        reporter: ProgressReporter | None = None,
+    ) -> LoadedSDPipeline:
+        import torch
+        from diffusers import QwenImageInpaintPipeline
+
+        display_name = "Qwen-Image native inpainting"
+        if reporter is not None:
+            reporter.emit(
+                "model_load_start",
+                stage="model",
+                message=f"Loading {display_name} pipeline.",
+                metadata={"method": QWEN_IMAGE_INPAINT_METHOD, "model_id": self.model_id},
+            )
+        timings: dict[str, float] = {}
+        resolve_started = time.perf_counter()
+        resolution = resolve_model_load_target(self.model_id)
+        timings["model_path_discovery_seconds"] = time.perf_counter() - resolve_started
+
+        token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_HUB_TOKEN")
+        kwargs: dict[str, Any] = {
+            "torch_dtype": torch.bfloat16,
+            "local_files_only": resolution.local_files_only,
+        }
+        if token:
+            kwargs["token"] = token
+
+        load_started = time.perf_counter()
+        pipe = QwenImageInpaintPipeline.from_pretrained(resolution.load_target, **kwargs)
+        timings["from_pretrained_seconds"] = time.perf_counter() - load_started
+
+        device_started = time.perf_counter()
+        if env_flag("ENABLE_QWEN_SEQUENTIAL_CPU_OFFLOAD", default=True) and hasattr(
+            pipe,
+            "enable_sequential_cpu_offload",
+        ):
+            pipe.enable_sequential_cpu_offload()
+            device_mode = "sequential_cpu_offload"
+        elif env_flag("ENABLE_MODEL_CPU_OFFLOAD", default=True) and hasattr(
+            pipe,
+            "enable_model_cpu_offload",
+        ):
+            pipe.enable_model_cpu_offload()
+            device_mode = "model_cpu_offload"
+        elif torch.cuda.is_available():
+            pipe.to("cuda")
+            device_mode = "cuda"
+        else:
+            pipe.to("cpu")
+            device_mode = "cpu"
+
+        if getattr(pipe, "vae", None) is not None:
+            if env_flag("ENABLE_VAE_TILING", default=True) and hasattr(pipe.vae, "enable_tiling"):
+                pipe.vae.enable_tiling()
+            if env_flag("ENABLE_VAE_SLICING", default=True) and hasattr(
+                pipe.vae,
+                "enable_slicing",
+            ):
+                pipe.vae.enable_slicing()
+        timings["device_setup_seconds"] = time.perf_counter() - device_started
+
+        model = {
+            "method": QWEN_IMAGE_INPAINT_METHOD,
+            "model_id": self.model_id,
+            "load_target": resolution.load_target,
+            "source": resolution.source,
+            "local_files_only": resolution.local_files_only,
+            "cache_root": resolution.cache_root,
+            "snapshot_path": resolution.snapshot_path,
+            "torch_dtype": str(torch.bfloat16),
+            "device_mode": device_mode,
+            "pipeline_class": type(pipe).__name__,
+            "generation_mode": "native_inpainting",
+            "backend_revision": QWEN_IMAGE_INPAINT_BACKEND_REVISION,
+        }
+        if reporter is not None:
+            reporter.emit(
+                "model_load_done",
+                stage="model",
+                message=f"{display_name} pipeline loaded.",
                 metadata={**model, "timings": timings},
             )
 
@@ -923,6 +1122,193 @@ class QwenImageInferenceService:
             output["run_report"] = {"progress_events": reporter.history}
         return output
 
+    def _run_native_inpaint(
+        self,
+        payload: dict[str, Any],
+        *,
+        reporter: ProgressReporter,
+        include_progress_history: bool,
+    ) -> dict[str, Any]:
+        settings = parse_qwen_image_inpaint_settings(payload)
+        reporter.emit(
+            "input_decode_start",
+            stage="input",
+            message="Decoding request image and mask.",
+        )
+        image, mask = load_request_images(payload)
+        mask_fraction = mask_coverage(mask)
+        source_image = make_qwen_lanpaint_source_by_strategy(
+            image,
+            mask,
+            strategy=settings.qwen_source_strategy,
+        )
+        reporter.emit(
+            "input_decode_done",
+            stage="input",
+            message="Request image, mask, and Qwen Image inpaint source decoded.",
+            metadata={
+                "image_width": image.width,
+                "image_height": image.height,
+                "mask_width": mask.width,
+                "mask_height": mask.height,
+                "mask_coverage": mask_fraction,
+                "backend_revision": QWEN_IMAGE_INPAINT_BACKEND_REVISION,
+                "qwen_source_strategy": settings.qwen_source_strategy,
+            },
+        )
+
+        loaded = self.get_inpaint_loaded(reporter=reporter)
+        pipe = loaded.pipe
+        torch = loaded.torch
+        generator = None
+        if settings.seed is not None:
+            generator = torch.Generator(device="cpu").manual_seed(settings.seed)
+
+        width = image.width // QWEN_IMAGE_DIMENSION_MULTIPLE * QWEN_IMAGE_DIMENSION_MULTIPLE
+        height = image.height // QWEN_IMAGE_DIMENSION_MULTIPLE * QWEN_IMAGE_DIMENSION_MULTIPLE
+        if width <= 0 or height <= 0:
+            raise WorkerInputError("image dimensions are too small for Qwen Image inpainting.")
+        if (width, height) != image.size:
+            source_for_pipeline = source_image.resize((width, height), Image.Resampling.LANCZOS)
+            mask_for_pipeline = mask.resize((width, height), Image.Resampling.NEAREST)
+        else:
+            source_for_pipeline = source_image
+            mask_for_pipeline = mask
+
+        call_kwargs: dict[str, Any] = {
+            "prompt": settings.prompt,
+            "negative_prompt": settings.negative_prompt,
+            "true_cfg_scale": settings.true_cfg_scale,
+            "image": source_for_pipeline,
+            "mask_image": mask_for_pipeline,
+            "height": height,
+            "width": width,
+            "padding_mask_crop": settings.padding_mask_crop,
+            "strength": settings.strength,
+            "num_inference_steps": settings.num_inference_steps,
+            "max_sequence_length": settings.max_sequence_length,
+        }
+        if generator is not None:
+            call_kwargs["generator"] = generator
+        _add_inference_progress_callback(
+            call_kwargs=call_kwargs,
+            pipe=pipe,
+            settings=settings,  # type: ignore[arg-type]
+            reporter=reporter,
+        )
+
+        with TemporaryDirectory(prefix=f"{settings.method}_worker_") as temp_dir:
+            temp_path = Path(temp_dir)
+            memory_before_inference = _cuda_memory_stats(torch, prefix="pre_inference_")
+            _reset_cuda_peak_memory(torch)
+            reporter.emit(
+                "inference_start",
+                stage="inference",
+                message="Starting Qwen-Image native inpainting inference.",
+                progress={"current": 0, "total": settings.num_inference_steps},
+                metadata={
+                    "method": settings.method,
+                    "backend_revision": QWEN_IMAGE_INPAINT_BACKEND_REVISION,
+                    "num_inference_steps": settings.num_inference_steps,
+                    "strength": settings.strength,
+                    "true_cfg_scale": settings.true_cfg_scale,
+                    "seed": settings.seed,
+                    "qwen_source_strategy": settings.qwen_source_strategy,
+                },
+            )
+            inference_started = time.perf_counter()
+            with torch.inference_mode():
+                raw = pipe(**call_kwargs).images[0].convert("RGB")
+            inference_seconds = time.perf_counter() - inference_started
+            inference_memory = {
+                **memory_before_inference,
+                **_cuda_memory_stats(torch, prefix="inference_"),
+            }
+            reporter.emit(
+                "inference_done",
+                stage="inference",
+                message="Qwen-Image native inpainting inference completed.",
+                progress={
+                    "current": _effective_step_total(pipe, settings),  # type: ignore[arg-type]
+                    "total": _effective_step_total(pipe, settings),  # type: ignore[arg-type]
+                },
+                metadata={
+                    "inference_seconds": inference_seconds,
+                    "gpu_memory": inference_memory,
+                },
+            )
+
+            if raw.size != image.size:
+                raw = raw.resize(image.size, Image.Resampling.LANCZOS)
+            reporter.emit(
+                "hard_composite_start",
+                stage="output",
+                message="Hard-compositing output with preserved pixels.",
+            )
+            composite = hard_composite(image, raw, mask)
+            changed_outside_mask = outside_mask_changed(image, composite, mask)
+            reporter.emit(
+                "hard_composite_done",
+                stage="output",
+                message="Hard composite completed.",
+                metadata={"outside_mask_changed": changed_outside_mask},
+            )
+            if changed_outside_mask:
+                raise RuntimeError("Hard composite changed pixels outside the edit mask.")
+
+            output_path = temp_path / f"composite.{settings.output_format}"
+            reporter.emit(
+                "output_encode_start",
+                stage="output",
+                message="Encoding output image.",
+                metadata={"output_format": settings.output_format},
+            )
+            composite.save(output_path)
+            encoded = image_to_base64(composite, output_format=settings.output_format)
+            reporter.emit(
+                "output_encode_done",
+                stage="output",
+                message="Output image encoded.",
+                metadata={
+                    "output_format": settings.output_format,
+                    "width": composite.width,
+                    "height": composite.height,
+                },
+            )
+
+        output = {
+            "image_base64": encoded,
+            "output_format": settings.output_format,
+            "width": composite.width,
+            "height": composite.height,
+            "mask_convention": "white = inpaint/edit, black = preserve",
+            "timings": {**loaded.timings, "inference_seconds": inference_seconds},
+            "gpu_memory": inference_memory,
+            "model": {
+                **loaded.model,
+                "source_image_route": settings.qwen_source_strategy,
+            },
+            "inference_settings": {
+                "method": settings.method,
+                "backend_revision": QWEN_IMAGE_INPAINT_BACKEND_REVISION,
+                "prompt": settings.prompt,
+                "negative_prompt": settings.negative_prompt,
+                "true_cfg_scale": settings.true_cfg_scale,
+                "guidance_scale_passed_as": "true_cfg_scale",
+                "num_inference_steps": settings.num_inference_steps,
+                "strength": settings.strength,
+                "max_sequence_length": settings.max_sequence_length,
+                "padding_mask_crop": settings.padding_mask_crop,
+                "seed": settings.seed,
+                "mask_coverage": mask_fraction,
+                "qwen_source_strategy": settings.qwen_source_strategy,
+            },
+            "outside_mask_changed_after_hard_composite": changed_outside_mask,
+        }
+        if include_progress_history:
+            output["run_report"] = {"progress_events": reporter.history}
+        return output
+
     def run(
         self,
         payload: dict[str, Any],
@@ -943,6 +1329,12 @@ class QwenImageInferenceService:
             method = normalize_method(payload.get("method"))
         except ValueError as exc:
             raise WorkerInputError(str(exc)) from exc
+        if method == QWEN_IMAGE_INPAINT_METHOD:
+            return self._run_native_inpaint(
+                payload,
+                reporter=reporter,
+                include_progress_history=include_progress_history,
+            )
         if method == QWEN_IMAGE_LANPAINT_METHOD:
             return self._run_lanpaint(
                 payload,
@@ -1080,7 +1472,9 @@ class QwenImageInferenceService:
 
 __all__ = [
     "QWEN_IMAGE_BACKEND_REVISION",
+    "QWEN_IMAGE_INPAINT_BACKEND_REVISION",
     "QWEN_IMAGE_MODEL_ID",
     "QwenImageInferenceService",
+    "parse_qwen_image_inpaint_settings",
     "parse_qwen_image_settings",
 ]

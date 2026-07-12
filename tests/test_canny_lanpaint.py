@@ -47,6 +47,7 @@ def test_method_defaults_to_fill_and_accepts_canny():
     assert normalize_method("sdxl_inpaint") == "sdxl_inpaint"
     assert normalize_method("qwen_edit") == "qwen_edit"
     assert normalize_method("qwen_image") == "qwen_image"
+    assert normalize_method("qwen_image_inpaint") == "qwen_image_inpaint"
     assert normalize_method("qwen_image_lanpaint") == "qwen_image_lanpaint"
     assert normalize_method("sd35_inpaint") == "sd35_inpaint"
     assert normalize_method("sdxl_brushnet") == "sdxl_brushnet"

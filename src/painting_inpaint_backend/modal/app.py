@@ -560,14 +560,15 @@ class QwenImageModalBackend:
 
         started = time.perf_counter()
         assert self.service is not None
+        received_method = str(payload.get("method", "qwen_image"))
         for event in stream_inference_events(
             payload,
             service=self.service,
             run_id=run_id,
             provider="modal",
-            received_message="Modal Qwen-Image text-to-image request received.",
-            completion_message="Modal Qwen-Image text-to-image generation completed.",
-            received_metadata={"stream_progress": True, "method": "qwen_image"},
+            received_message="Modal Qwen-Image request received.",
+            completion_message="Modal Qwen-Image request completed.",
+            received_metadata={"stream_progress": True, "method": received_method},
         ):
             if event.get("type") == "final" and isinstance(event.get("output"), dict):
                 timings = event["output"].setdefault("timings", {})
@@ -1213,6 +1214,7 @@ def restoration_api():
             FLUX_FILL_CANNY_FILL_METHOD,
             FLUX_FILL_CANNY_NATIVE_METHOD,
             QWEN_EDIT_METHOD,
+            QWEN_IMAGE_INPAINT_METHOD,
             QWEN_IMAGE_LANPAINT_METHOD,
             QWEN_IMAGE_METHOD,
             SD15_INPAINT_METHOD,
@@ -1296,6 +1298,11 @@ def restoration_api():
                     run_id,
                 )
             elif method == QWEN_IMAGE_METHOD:
+                yield from QwenImageModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == QWEN_IMAGE_INPAINT_METHOD:
                 yield from QwenImageModalBackend().restore_stream.remote_gen(
                     payload,
                     run_id,

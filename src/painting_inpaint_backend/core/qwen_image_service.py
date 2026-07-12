@@ -117,6 +117,13 @@ def _parse_prompt(payload: dict[str, Any]) -> str:
     return prompt
 
 
+def _parse_lanpaint_prompt(payload: dict[str, Any]) -> str:
+    prompt = payload.get("prompt", "")
+    if not isinstance(prompt, str):
+        raise WorkerInputError("prompt must be a string when provided.")
+    return prompt
+
+
 def _parse_true_cfg_scale(payload: dict[str, Any]) -> float:
     true_cfg_default = payload.get("guidance_scale", 4.0)
     if true_cfg_default is None:
@@ -201,7 +208,7 @@ def parse_qwen_image_lanpaint_settings(payload: dict[str, Any]) -> QwenImageLanP
             f"The service only accepts method={QWEN_IMAGE_LANPAINT_METHOD!r}."
         )
 
-    prompt = _parse_prompt(payload)
+    prompt = _parse_lanpaint_prompt(payload)
     true_cfg_scale = _parse_true_cfg_scale(payload)
 
     num_inference_steps = _optional_int(payload, "num_inference_steps", 50)

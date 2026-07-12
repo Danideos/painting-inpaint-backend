@@ -509,12 +509,21 @@ class QwenImageModalBackend:
 
     @modal.enter()
     def enter(self) -> None:
+        import importlib
+
         from painting_inpaint_backend.core.qwen_image_service import QwenImageInferenceService
 
         started = time.perf_counter()
         self.service = None
         self.enter_error = None
         try:
+            torch = importlib.import_module("torch")
+            diffusers = importlib.import_module("diffusers")
+            _ = (
+                torch.__version__,
+                diffusers.QwenImagePipeline,
+                diffusers.QwenImageInpaintPipeline,
+            )
             self.service = QwenImageInferenceService()
         except Exception as exc:
             self.enter_error = safe_remote_error(exc, stage="container_initialization")

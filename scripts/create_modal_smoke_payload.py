@@ -38,6 +38,8 @@ def main() -> int:
             "sd15_inpaint",
             "sdxl_inpaint",
             "qwen_edit",
+            "qwen_image",
+            "qwen_image_lanpaint",
             "sd35_inpaint",
             "sdxl_brushnet",
         ),
@@ -46,21 +48,28 @@ def main() -> int:
     parser.add_argument("--include-control-image", action="store_true")
     args = parser.parse_args()
 
-    image, mask = make_images(args.size)
     payload = {
         "method": args.method,
-        "image_base64": image_to_base64(image, output_format="png"),
-        "mask_base64": image_to_base64(mask, output_format="png"),
         "prompt": "DURER_RESTO",
-        "partial_noise": 1.0,
         "num_inference_steps": 8,
         "seed": 123,
-        "lora_scale": 1.0,
         "output_format": "png",
     }
+    if args.method == "qwen_image":
+        payload.update({"width": args.size, "height": args.size, "true_cfg_scale": 4.0})
+    else:
+        image, mask = make_images(args.size)
+        payload.update(
+            {
+                "image_base64": image_to_base64(image, output_format="png"),
+                "mask_base64": image_to_base64(mask, output_format="png"),
+                "partial_noise": 1.0,
+                "lora_scale": 1.0,
+            }
+        )
     if args.method == "flux_fill":
         payload["guidance_scale"] = 30.0
-    if args.include_control_image:
+    if args.include_control_image and args.method != "qwen_image":
         payload["control_image_base64"] = image_to_base64(image, output_format="png")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2), encoding="utf-8")

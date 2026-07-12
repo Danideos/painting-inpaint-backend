@@ -15,6 +15,8 @@ from painting_inpaint_backend.core.methods import (
     FLUX_CANNY_FILL_METHOD,
     FLUX_CANNY_LANPAINT_METHOD,
     QWEN_EDIT_METHOD,
+    QWEN_IMAGE_LANPAINT_METHOD,
+    QWEN_IMAGE_METHOD,
     SD15_INPAINT_METHOD,
     SD35_INPAINT_METHOD,
     SDXL_BRUSHNET_METHOD,
@@ -27,6 +29,7 @@ from painting_inpaint_backend.modal.app import (
     FluxCannyLanPaintModalBackend,
     FluxFillModalBackend,
     QwenEditModalBackend,
+    QwenImageModalBackend,
     SD15ModalBackend,
     SD35ModalBackend,
     SDXLBrushNetModalBackend,
@@ -60,6 +63,10 @@ def main() -> int:
         backend = SDXLModalBackend()
     elif method == QWEN_EDIT_METHOD:
         backend = QwenEditModalBackend()
+    elif method == QWEN_IMAGE_METHOD:
+        backend = QwenImageModalBackend()
+    elif method == QWEN_IMAGE_LANPAINT_METHOD:
+        backend = QwenImageModalBackend()
     elif method == SD35_INPAINT_METHOD:
         backend = SD35ModalBackend()
     elif method == SDXL_BRUSHNET_METHOD:

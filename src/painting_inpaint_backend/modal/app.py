@@ -26,6 +26,9 @@ from .config import (
     QWEN_EDIT_MODELS_DIR,
     QWEN_EDIT_VOLUME_NAME,
     QWEN_GPU_TYPE,
+    QWEN_IMAGE_INFERENCE_ENV,
+    QWEN_IMAGE_MODELS_DIR,
+    QWEN_IMAGE_VOLUME_NAME,
     SD15_INFERENCE_ENV,
     SD15_MODELS_DIR,
     SD15_VOLUME_NAME,
@@ -52,6 +55,7 @@ canny_model_volume = modal.Volume.from_name(CANNY_VOLUME_NAME, create_if_missing
 sd15_model_volume = modal.Volume.from_name(SD15_VOLUME_NAME, create_if_missing=True)
 sdxl_model_volume = modal.Volume.from_name(SDXL_VOLUME_NAME, create_if_missing=True)
 qwen_edit_model_volume = modal.Volume.from_name(QWEN_EDIT_VOLUME_NAME, create_if_missing=True)
+qwen_image_model_volume = modal.Volume.from_name(QWEN_IMAGE_VOLUME_NAME, create_if_missing=True)
 sd35_model_volume = modal.Volume.from_name(SD35_VOLUME_NAME, create_if_missing=True)
 sdxl_brushnet_model_volume = modal.Volume.from_name(
     SDXL_BRUSHNET_VOLUME_NAME,
@@ -127,6 +131,15 @@ qwen_edit_inference_image = _with_local_backend_source(
     modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
         {
             **QWEN_EDIT_INFERENCE_ENV,
+            "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
+            "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
+        }
+    )
+)
+qwen_image_inference_image = _with_local_backend_source(
+    modal.Image.from_registry(_BACKEND_IMAGE_REF).env(
+        {
+            **QWEN_IMAGE_INFERENCE_ENV,
             "PAINTING_INPAINT_BACKEND_IMAGE": _BACKEND_IMAGE_REF,
             "PAINTING_INPAINT_CANNY_IMAGE": _CANNY_IMAGE_EFFECTIVE_REF,
         }
@@ -475,6 +488,86 @@ class QwenEditModalBackend:
             received_message="Modal Qwen-Image-Edit LanPaint request received.",
             completion_message="Modal Qwen-Image-Edit LanPaint restoration completed.",
             received_metadata={"stream_progress": True, "method": "qwen_edit"},
+        ):
+            if event.get("type") == "final" and isinstance(event.get("output"), dict):
+                timings = event["output"].setdefault("timings", {})
+                timings["modal_container_enter_seconds"] = self.container_enter_seconds
+                timings["modal_request_seconds"] = time.perf_counter() - started
+            yield json_response(event)
+
+
+@app.cls(
+    image=qwen_image_inference_image,
+    gpu=QWEN_GPU_TYPE,
+    volumes={str(QWEN_IMAGE_MODELS_DIR): qwen_image_model_volume},
+    timeout=2400,
+    scaledown_window=2,
+    include_source=False,
+)
+class QwenImageModalBackend:
+    """Scale-to-zero Qwen-Image text-to-image experiment service."""
+
+    @modal.enter()
+    def enter(self) -> None:
+        from painting_inpaint_backend.core.qwen_image_service import QwenImageInferenceService
+
+        started = time.perf_counter()
+        self.service = None
+        self.enter_error = None
+        try:
+            self.service = QwenImageInferenceService()
+        except Exception as exc:
+            self.enter_error = safe_remote_error(exc, stage="container_initialization")
+        finally:
+            self.container_enter_seconds = time.perf_counter() - started
+
+    @modal.method()
+    def restore(self, payload: dict[str, Any]) -> str:
+        """Run one Qwen-Image text-to-image request."""
+
+        if self.enter_error is not None:
+            return json_response({"modal_error": self.enter_error})
+        try:
+            started = time.perf_counter()
+            assert self.service is not None
+            output = self.service.run(payload)
+            timings = output.setdefault("timings", {})
+            timings["modal_container_enter_seconds"] = self.container_enter_seconds
+            timings["modal_request_seconds"] = time.perf_counter() - started
+            return json_response(output)
+        except Exception as exc:
+            return json_response(
+                {"modal_error": safe_remote_error(exc, stage="request_inference")}
+            )
+
+    @modal.method()
+    def restore_stream(self, payload: dict[str, Any], run_id: str):
+        """Yield Qwen-Image generation progress events across the Modal boundary."""
+
+        from painting_inpaint_backend.core.progress import ProgressReporter
+        from painting_inpaint_backend.core.streaming import stream_inference_events
+
+        if self.enter_error is not None:
+            reporter = ProgressReporter(run_id=run_id, enabled=True)
+            yield json_response(
+                reporter.error(
+                    stage="container_initialization",
+                    message=self.enter_error["error"],
+                    metadata=self.enter_error,
+                )
+            )
+            return
+
+        started = time.perf_counter()
+        assert self.service is not None
+        for event in stream_inference_events(
+            payload,
+            service=self.service,
+            run_id=run_id,
+            provider="modal",
+            received_message="Modal Qwen-Image text-to-image request received.",
+            completion_message="Modal Qwen-Image text-to-image generation completed.",
+            received_metadata={"stream_progress": True, "method": "qwen_image"},
         ):
             if event.get("type") == "final" and isinstance(event.get("output"), dict):
                 timings = event["output"].setdefault("timings", {})
@@ -1120,6 +1213,8 @@ def restoration_api():
             FLUX_FILL_CANNY_FILL_METHOD,
             FLUX_FILL_CANNY_NATIVE_METHOD,
             QWEN_EDIT_METHOD,
+            QWEN_IMAGE_LANPAINT_METHOD,
+            QWEN_IMAGE_METHOD,
             SD15_INPAINT_METHOD,
             SD35_INPAINT_METHOD,
             SDXL_BRUSHNET_METHOD,
@@ -1197,6 +1292,16 @@ def restoration_api():
                 )
             elif method == QWEN_EDIT_METHOD:
                 yield from QwenEditModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == QWEN_IMAGE_METHOD:
+                yield from QwenImageModalBackend().restore_stream.remote_gen(
+                    payload,
+                    run_id,
+                )
+            elif method == QWEN_IMAGE_LANPAINT_METHOD:
+                yield from QwenImageModalBackend().restore_stream.remote_gen(
                     payload,
                     run_id,
                 )

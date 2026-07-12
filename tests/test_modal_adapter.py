@@ -14,6 +14,8 @@ from painting_inpaint_backend.modal.config import (
     INFERENCE_ENV,
     QWEN_EDIT_INFERENCE_ENV,
     QWEN_EDIT_MODELS_DIR,
+    QWEN_IMAGE_INFERENCE_ENV,
+    QWEN_IMAGE_MODELS_DIR,
     SD15_INFERENCE_ENV,
     SD15_MODELS_DIR,
     SD35_INFERENCE_ENV,
@@ -95,6 +97,7 @@ def test_modal_paths_are_posix_even_on_windows():
     assert SD15_INFERENCE_ENV["MODEL_PATH"].startswith("/sd15_models/")
     assert SDXL_INFERENCE_ENV["MODEL_PATH"].startswith("/sdxl_models/")
     assert QWEN_EDIT_INFERENCE_ENV["MODEL_PATH"].startswith("/qwen_edit_models/")
+    assert QWEN_IMAGE_INFERENCE_ENV["MODEL_PATH"].startswith("/qwen_image_models/")
     assert SD35_INFERENCE_ENV["MODEL_PATH"].startswith("/sd35_models/")
     assert SD35_INFERENCE_ENV["CONTROLNET_PATH"].startswith("/sd35_models/")
     assert SDXL_BRUSHNET_INFERENCE_ENV["MODEL_PATH"].startswith("/sdxl_brushnet_models/")
@@ -103,6 +106,7 @@ def test_modal_paths_are_posix_even_on_windows():
     assert "\\" not in SD15_INFERENCE_ENV["MODEL_PATH"]
     assert "\\" not in SDXL_INFERENCE_ENV["MODEL_PATH"]
     assert "\\" not in QWEN_EDIT_INFERENCE_ENV["MODEL_PATH"]
+    assert "\\" not in QWEN_IMAGE_INFERENCE_ENV["MODEL_PATH"]
     assert "\\" not in SD35_INFERENCE_ENV["MODEL_PATH"]
     assert "\\" not in SD35_INFERENCE_ENV["CONTROLNET_PATH"]
     assert "\\" not in SDXL_BRUSHNET_INFERENCE_ENV["MODEL_PATH"]
@@ -111,6 +115,7 @@ def test_modal_paths_are_posix_even_on_windows():
     assert str(SD15_MODELS_DIR) == "/sd15_models"
     assert str(SDXL_MODELS_DIR) == "/sdxl_models"
     assert str(QWEN_EDIT_MODELS_DIR) == "/qwen_edit_models"
+    assert str(QWEN_IMAGE_MODELS_DIR) == "/qwen_image_models"
     assert str(SD35_MODELS_DIR) == "/sd35_models"
     assert str(SDXL_BRUSHNET_MODELS_DIR) == "/sdxl_brushnet_models"
 
@@ -135,6 +140,7 @@ def test_modal_adapter_uses_registry_image_without_source_overlay_or_warm_worker
     assert "SD15ModalBackend" in source
     assert "SDXLModalBackend" in source
     assert "QwenEditModalBackend" in source
+    assert "QwenImageModalBackend" in source
     assert "SD35ModalBackend" in source
     assert "SDXLBrushNetModalBackend" in source
     assert "painting-inpaint-ghcr" not in source

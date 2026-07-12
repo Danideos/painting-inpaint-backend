@@ -13,6 +13,8 @@ FLUX_FILL_CANNY_FILL_METHOD = "flux_fill_canny_fill"
 SD15_INPAINT_METHOD = "sd15_inpaint"
 SDXL_INPAINT_METHOD = "sdxl_inpaint"
 QWEN_EDIT_METHOD = "qwen_edit"
+QWEN_IMAGE_METHOD = "qwen_image"
+QWEN_IMAGE_LANPAINT_METHOD = "qwen_image_lanpaint"
 SD35_INPAINT_METHOD = "sd35_inpaint"
 SDXL_BRUSHNET_METHOD = "sdxl_brushnet"
 DEFAULT_METHOD = FLUX_FILL_METHOD
@@ -27,6 +29,8 @@ RestorationMethod = Literal[
     "sd15_inpaint",
     "sdxl_inpaint",
     "qwen_edit",
+    "qwen_image",
+    "qwen_image_lanpaint",
     "sd35_inpaint",
     "sdxl_brushnet",
 ]
@@ -54,6 +58,10 @@ def normalize_method(value: Any = None) -> RestorationMethod:
         return SDXL_INPAINT_METHOD
     if normalized == QWEN_EDIT_METHOD:
         return QWEN_EDIT_METHOD
+    if normalized == QWEN_IMAGE_METHOD:
+        return QWEN_IMAGE_METHOD
+    if normalized == QWEN_IMAGE_LANPAINT_METHOD:
+        return QWEN_IMAGE_LANPAINT_METHOD
     if normalized == SD35_INPAINT_METHOD:
         return SD35_INPAINT_METHOD
     if normalized == SDXL_BRUSHNET_METHOD:
@@ -62,7 +70,7 @@ def normalize_method(value: Any = None) -> RestorationMethod:
         "method must be one of: flux_fill, flux_canny_lanpaint, "
         "flux_canny_lanpaint_native, flux_canny_fill, flux_fill_canny_native, "
         "flux_fill_canny_fill, sd15_inpaint, sdxl_inpaint, qwen_edit, "
-        "sd35_inpaint, sdxl_brushnet; "
+        "qwen_image, qwen_image_lanpaint, sd35_inpaint, sdxl_brushnet; "
         f"got {value!r}."
     )
 
@@ -76,6 +84,8 @@ __all__ = [
     "FLUX_FILL_CANNY_NATIVE_METHOD",
     "FLUX_FILL_METHOD",
     "QWEN_EDIT_METHOD",
+    "QWEN_IMAGE_METHOD",
+    "QWEN_IMAGE_LANPAINT_METHOD",
     "RestorationMethod",
     "SD35_INPAINT_METHOD",
     "SD15_INPAINT_METHOD",

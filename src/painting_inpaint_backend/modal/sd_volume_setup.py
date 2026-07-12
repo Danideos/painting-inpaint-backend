@@ -17,6 +17,10 @@ from .config import (
     QWEN_EDIT_MODEL_ID,
     QWEN_EDIT_MODELS_DIR,
     QWEN_EDIT_VOLUME_NAME,
+    QWEN_IMAGE_MODEL_DIR,
+    QWEN_IMAGE_MODEL_ID,
+    QWEN_IMAGE_MODELS_DIR,
+    QWEN_IMAGE_VOLUME_NAME,
     SD15_MODEL_DIR,
     SD15_MODEL_ID,
     SD15_MODELS_DIR,
@@ -47,6 +51,7 @@ app = modal.App(f"{APP_NAME}-sd-volume")
 sd15_volume = modal.Volume.from_name(SD15_VOLUME_NAME, create_if_missing=True)
 sdxl_volume = modal.Volume.from_name(SDXL_VOLUME_NAME, create_if_missing=True)
 qwen_edit_volume = modal.Volume.from_name(QWEN_EDIT_VOLUME_NAME, create_if_missing=True)
+qwen_image_volume = modal.Volume.from_name(QWEN_IMAGE_VOLUME_NAME, create_if_missing=True)
 sd35_volume = modal.Volume.from_name(SD35_VOLUME_NAME, create_if_missing=True)
 sdxl_brushnet_volume = modal.Volume.from_name(
     SDXL_BRUSHNET_VOLUME_NAME,
@@ -221,6 +226,25 @@ def populate_qwen_edit_volume(force: bool = False) -> dict[str, Any]:
 
 @app.function(
     image=download_image,
+    volumes={str(QWEN_IMAGE_MODELS_DIR): qwen_image_volume},
+    secrets=[modal.Secret.from_name(HF_SECRET_NAME)],
+    timeout=14400,
+)
+def populate_qwen_image_volume(force: bool = False) -> dict[str, Any]:
+    """Download Qwen-Image text-to-image weights into the Qwen Image Modal Volume."""
+
+    return _populate_model(
+        repo_id=QWEN_IMAGE_MODEL_ID,
+        target=Path(QWEN_IMAGE_MODEL_DIR),
+        volume=qwen_image_volume,
+        volume_name=QWEN_IMAGE_VOLUME_NAME,
+        mount=Path(QWEN_IMAGE_MODELS_DIR),
+        force=force,
+    )
+
+
+@app.function(
+    image=download_image,
     volumes={str(SD35_MODELS_DIR): sd35_volume},
     secrets=[modal.Secret.from_name(HF_SECRET_NAME)],
     timeout=14400,
@@ -299,6 +323,22 @@ def inspect_qwen_edit_volume() -> dict[str, Any]:
         "volume": QWEN_EDIT_VOLUME_NAME,
         "mount": str(QWEN_EDIT_MODELS_DIR),
         "model": snapshot_summary(Path(QWEN_EDIT_MODEL_DIR)),
+    }
+
+
+@app.function(
+    image=download_image,
+    volumes={str(QWEN_IMAGE_MODELS_DIR): qwen_image_volume},
+    timeout=600,
+)
+def inspect_qwen_image_volume() -> dict[str, Any]:
+    """Inspect expected Qwen Image model directory."""
+
+    qwen_image_volume.reload()
+    return {
+        "volume": QWEN_IMAGE_VOLUME_NAME,
+        "mount": str(QWEN_IMAGE_MODELS_DIR),
+        "model": snapshot_summary(Path(QWEN_IMAGE_MODEL_DIR)),
     }
 
 

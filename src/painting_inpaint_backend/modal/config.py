@@ -12,6 +12,7 @@ CANNY_VOLUME_NAME = "flux-canny-models"
 SD15_VOLUME_NAME = "sd15-inpaint-models"
 SDXL_VOLUME_NAME = "sdxl-inpaint-models"
 QWEN_EDIT_VOLUME_NAME = "qwen-edit-models"
+QWEN_IMAGE_VOLUME_NAME = "qwen-image-models"
 SD35_VOLUME_NAME = "sd35-inpaint-models"
 SDXL_BRUSHNET_VOLUME_NAME = "sdxl-brushnet-models"
 HF_SECRET_NAME = "huggingface-secret"
@@ -30,6 +31,7 @@ CANNY_LORA_REPO_ID = "danideos/durer-flux-canny-lora"
 SD15_MODEL_ID = "runwayml/stable-diffusion-inpainting"
 SDXL_MODEL_ID = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 QWEN_EDIT_MODEL_ID = "Qwen/Qwen-Image-Edit"
+QWEN_IMAGE_MODEL_ID = "Qwen/Qwen-Image"
 SD35_BASE_MODEL_ID = "stabilityai/stable-diffusion-3-medium-diffusers"
 SD35_CONTROLNET_MODEL_ID = "alimama-creative/SD3-Controlnet-Inpainting"
 SDXL_BRUSHNET_BASE_MODEL_ID = "stabilityai/stable-diffusion-xl-base-1.0"
@@ -41,6 +43,7 @@ MODELS_DIR = PurePosixPath("/models")
 SD15_MODELS_DIR = PurePosixPath("/sd15_models")
 SDXL_MODELS_DIR = PurePosixPath("/sdxl_models")
 QWEN_EDIT_MODELS_DIR = PurePosixPath("/qwen_edit_models")
+QWEN_IMAGE_MODELS_DIR = PurePosixPath("/qwen_image_models")
 SD35_MODELS_DIR = PurePosixPath("/sd35_models")
 SDXL_BRUSHNET_MODELS_DIR = PurePosixPath("/sdxl_brushnet_models")
 MODEL_DIR = MODELS_DIR / MODEL_ID
@@ -50,6 +53,7 @@ CANNY_LORA_DIR = MODELS_DIR / CANNY_LORA_REPO_ID
 SD15_MODEL_DIR = SD15_MODELS_DIR / SD15_MODEL_ID
 SDXL_MODEL_DIR = SDXL_MODELS_DIR / SDXL_MODEL_ID
 QWEN_EDIT_MODEL_DIR = QWEN_EDIT_MODELS_DIR / QWEN_EDIT_MODEL_ID
+QWEN_IMAGE_MODEL_DIR = QWEN_IMAGE_MODELS_DIR / QWEN_IMAGE_MODEL_ID
 SD35_BASE_MODEL_DIR = SD35_MODELS_DIR / SD35_BASE_MODEL_ID
 SD35_CONTROLNET_MODEL_DIR = SD35_MODELS_DIR / SD35_CONTROLNET_MODEL_ID
 SDXL_BRUSHNET_BASE_MODEL_DIR = SDXL_BRUSHNET_MODELS_DIR / SDXL_BRUSHNET_BASE_MODEL_ID
@@ -134,6 +138,14 @@ QWEN_EDIT_INFERENCE_ENV = {
     "PYTHONUNBUFFERED": "1",
 }
 
+QWEN_IMAGE_INFERENCE_ENV = {
+    "MODEL_PATH": str(QWEN_IMAGE_MODEL_DIR),
+    "HF_HUB_OFFLINE": "1",
+    "TRANSFORMERS_OFFLINE": "1",
+    "DIFFUSERS_OFFLINE": "1",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "PYTHONUNBUFFERED": "1",
+}
 SD35_INFERENCE_ENV = {
     "MODEL_PATH": str(SD35_BASE_MODEL_DIR),
     "CONTROLNET_PATH": str(SD35_CONTROLNET_MODEL_DIR),

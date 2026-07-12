@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from contextlib import nullcontext
@@ -57,7 +58,7 @@ LOGGER = logging.getLogger(__name__)
 QWEN_IMAGE_MODEL_ID = "Qwen/Qwen-Image"
 QWEN_IMAGE_BACKEND_REVISION = "qwen-image-text-to-image-v1"
 QWEN_IMAGE_INPAINT_BACKEND_REVISION = "qwen-image-native-inpaint-v1"
-QWEN_IMAGE_LANPAINT_BACKEND_REVISION = "qwen-image-lanpaint-v1"
+QWEN_IMAGE_LANPAINT_BACKEND_REVISION = "qwen-image-lanpaint-sampling-shift-v2"
 QWEN_IMAGE_DEFAULT_SIZE = 1024
 QWEN_IMAGE_DIMENSION_MULTIPLE = 16
 
@@ -91,6 +92,7 @@ class QwenImageLanPaintSettings:
     output_format: str
     max_sequence_length: int
     qwen_source_strategy: str
+    qwen_sampling_shift: float | None
     lanpaint_inner_steps: int
     lanpaint_friction: float
     lanpaint_lambda: float
@@ -174,6 +176,49 @@ def _parse_padding_mask_crop(payload: dict[str, Any]) -> int | None:
     if parsed < 0:
         raise WorkerInputError("padding_mask_crop must be non-negative.")
     return parsed
+
+
+def _parse_qwen_sampling_shift(payload: dict[str, Any]) -> float | None:
+    value = payload.get("qwen_sampling_shift")
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise WorkerInputError("qwen_sampling_shift must be a finite positive number.") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise WorkerInputError("qwen_sampling_shift must be a finite positive number.")
+    return parsed
+
+
+def resolve_qwen_sampling_shift(
+    *,
+    image_seq_len: int,
+    scheduler_config: Any,
+    calculate_shift: Any,
+    qwen_sampling_shift: float | None,
+) -> dict[str, Any]:
+    """Resolve Qwen's Diffusers mu from dynamic sizing or a ComfyUI shift value."""
+
+    if qwen_sampling_shift is None:
+        mu = calculate_shift(
+            image_seq_len,
+            scheduler_config.get("base_image_seq_len", 256),
+            scheduler_config.get("max_image_seq_len", 4096),
+            scheduler_config.get("base_shift", 0.5),
+            scheduler_config.get("max_shift", 1.15),
+        )
+        mode = "dynamic"
+    else:
+        mu = math.log(qwen_sampling_shift)
+        mode = "fixed"
+    mu = float(mu)
+    return {
+        "mu": mu,
+        "qwen_sampling_shift_requested": qwen_sampling_shift,
+        "qwen_sampling_shift_effective": math.exp(mu),
+        "qwen_sampling_shift_mode": mode,
+    }
 
 
 def parse_qwen_image_settings(payload: dict[str, Any]) -> QwenImageSettings:
@@ -347,6 +392,7 @@ def parse_qwen_image_lanpaint_settings(payload: dict[str, Any]) -> QwenImageLanP
         output_format=output_format,
         max_sequence_length=max_sequence_length,
         qwen_source_strategy=parse_qwen_source_strategy(payload),
+        qwen_sampling_shift=_parse_qwen_sampling_shift(payload),
         lanpaint_inner_steps=lanpaint_inner_steps,
         lanpaint_friction=lanpaint_friction,
         lanpaint_lambda=lanpaint_lambda,
@@ -418,6 +464,7 @@ class QwenImageLanPaintAdapter:
         source_image: Image.Image,
         generator: Any,
         num_inference_steps: int,
+        qwen_sampling_shift: float | None,
     ) -> tuple[Any, Any, Any, Any]:
         import torch
         from diffusers.pipelines.qwenimage.pipeline_qwenimage import (
@@ -485,13 +532,13 @@ class QwenImageLanPaintAdapter:
 
         sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
         image_seq_len = source_latent.shape[1]
-        mu = calculate_shift(
-            image_seq_len,
-            self.pipe.scheduler.config.get("base_image_seq_len", 256),
-            self.pipe.scheduler.config.get("max_image_seq_len", 4096),
-            self.pipe.scheduler.config.get("base_shift", 0.5),
-            self.pipe.scheduler.config.get("max_shift", 1.15),
+        sampling_shift_metadata = resolve_qwen_sampling_shift(
+            image_seq_len=image_seq_len,
+            scheduler_config=self.pipe.scheduler.config,
+            calculate_shift=calculate_shift,
+            qwen_sampling_shift=qwen_sampling_shift,
         )
+        mu = sampling_shift_metadata["mu"]
         timesteps, resolved_steps = retrieve_timesteps(
             self.pipe.scheduler,
             num_inference_steps,
@@ -518,7 +565,7 @@ class QwenImageLanPaintAdapter:
             "scheduler_class": type(self.pipe.scheduler).__name__,
             "requested_num_inference_steps": int(num_inference_steps),
             "effective_num_inference_steps": int(resolved_steps),
-            "mu": float(mu),
+            **sampling_shift_metadata,
         }
         return latents, noise, source_latent, timesteps
 
@@ -924,6 +971,7 @@ class QwenImageInferenceService:
                 "mask_coverage": mask_fraction,
                 "backend_revision": QWEN_IMAGE_LANPAINT_BACKEND_REVISION,
                 "qwen_source_strategy": settings.qwen_source_strategy,
+                "qwen_sampling_shift": settings.qwen_sampling_shift,
             },
         )
 
@@ -953,6 +1001,7 @@ class QwenImageInferenceService:
                     "seed": settings.seed,
                     "lanpaint_inner_steps": settings.lanpaint_inner_steps,
                     "qwen_source_strategy": settings.qwen_source_strategy,
+                    "qwen_sampling_shift": settings.qwen_sampling_shift,
                 },
             )
             inference_started = time.perf_counter()
@@ -968,6 +1017,7 @@ class QwenImageInferenceService:
                 source_image=source_image,
                 generator=generator,
                 num_inference_steps=settings.num_inference_steps,
+                qwen_sampling_shift=settings.qwen_sampling_shift,
             )
             keep_mask, edit_mask = adapter.mask_edit_to_latents(mask)
             _free_qwen_offloaded_modules(pipe, torch)
@@ -1106,6 +1156,7 @@ class QwenImageInferenceService:
                 "seed": settings.seed,
                 "mask_coverage": mask_fraction,
                 "qwen_source_strategy": settings.qwen_source_strategy,
+                "qwen_sampling_shift": settings.qwen_sampling_shift,
                 "lanpaint_inner_steps": settings.lanpaint_inner_steps,
                 "lanpaint_friction": settings.lanpaint_friction,
                 "lanpaint_lambda": settings.lanpaint_lambda,
@@ -1473,8 +1524,11 @@ class QwenImageInferenceService:
 __all__ = [
     "QWEN_IMAGE_BACKEND_REVISION",
     "QWEN_IMAGE_INPAINT_BACKEND_REVISION",
+    "QWEN_IMAGE_LANPAINT_BACKEND_REVISION",
     "QWEN_IMAGE_MODEL_ID",
     "QwenImageInferenceService",
     "parse_qwen_image_inpaint_settings",
+    "parse_qwen_image_lanpaint_settings",
     "parse_qwen_image_settings",
+    "resolve_qwen_sampling_shift",
 ]
